@@ -5,6 +5,7 @@
 #include <cstring>
 
 extern "C" {
+#include <libavcodec/bsf.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/log.h>
@@ -156,6 +157,38 @@ std::vector<uint8_t> ConvertAnnexBToLengthPrefixed(const uint8_t* data, const si
     }
 
     return converted;
+}
+
+std::vector<uint8_t> GetHevcAnnexBMagicCookie(AVCodecContext* ctx) {
+    std::vector<uint8_t> cookie;
+
+    const AVBitStreamFilter* bsf = av_bsf_get_by_name("hevc_mp4toannexb");
+    if (bsf == nullptr) {
+        return cookie;
+    }
+
+    AVBSFContext* bsfCtx = nullptr;
+    if (av_bsf_alloc(bsf, &bsfCtx) < 0 || bsfCtx == nullptr) {
+        return cookie;
+    }
+
+    if (avcodec_parameters_from_context(bsfCtx->par_in, ctx) < 0) {
+        av_bsf_free(&bsfCtx);
+        return cookie;
+    }
+
+    bsfCtx->time_base_in = ctx->time_base;
+    if (av_bsf_init(bsfCtx) < 0) {
+        av_bsf_free(&bsfCtx);
+        return cookie;
+    }
+
+    if (bsfCtx->par_out->extradata != nullptr && bsfCtx->par_out->extradata_size > 0) {
+        cookie.assign(bsfCtx->par_out->extradata, bsfCtx->par_out->extradata + bsfCtx->par_out->extradata_size);
+    }
+
+    av_bsf_free(&bsfCtx);
+    return cookie;
 }
 
 const char* GetAmfUsageName(const uint32_t fourCC, const int usage) {
@@ -358,7 +391,7 @@ StatusCode FFmpegEncoder::DoOpen(HostBufferRef* p_pBuff) {
     useHwFrames = UsesHwFrames(encoderInfo.hwAcceleration);
     useHevcLengthPrefixedOutput = UsesHevcLengthPrefixedOutput(encoderInfo, commonProps);
     if (encoderInfo.fourCC == 'hvc1') {
-        g_Log(logLevelInfo, "FFmpeg Plugin :: HEVC output mode=%s container='%s' path='%s'",
+        g_Log(logLevelWarn, "FFmpeg Plugin :: HEVC output mode=%s container='%s' path='%s'",
               useHevcLengthPrefixedOutput ? "hvcC/length-prefixed" : "AnnexB/anxb", commonProps.GetContainer().c_str(),
               commonProps.GetPath().c_str());
     }
@@ -514,13 +547,22 @@ StatusCode FFmpegEncoder::DoOpen(HostBufferRef* p_pBuff) {
         }
     }
 
+    std::vector<uint8_t> hevcAnnexBCookie;
     const uint8_t* magicCookie = ctx->extradata;
     int magicCookieSize = ctx->extradata_size;
     uint32_t magicCookieType = 0;
     if (encoderInfo.fourCC == 'avc1') {
         magicCookieType = 'avcC';
     } else if (encoderInfo.fourCC == 'hvc1') {
-        magicCookieType = useHevcLengthPrefixedOutput ? 'hvcC' : 'anxb';
+        hevcAnnexBCookie = GetHevcAnnexBMagicCookie(ctx);
+        if (!hevcAnnexBCookie.empty()) {
+            magicCookie = hevcAnnexBCookie.data();
+            magicCookieSize = static_cast<int>(hevcAnnexBCookie.size());
+        }
+        magicCookieType = 0;
+        g_Log(logLevelWarn, "FFmpeg Plugin :: HEVC cookie size=%d firstbytes=%02X %02X %02X %02X",
+              magicCookieSize, magicCookieSize > 0 ? magicCookie[0] : 0, magicCookieSize > 1 ? magicCookie[1] : 0,
+              magicCookieSize > 2 ? magicCookie[2] : 0, magicCookieSize > 3 ? magicCookie[3] : 0);
     } else if (encoderInfo.fourCC == 'av01') {
         magicCookieType = 'av1C';
     }
@@ -835,6 +877,17 @@ StatusCode FFmpegEncoder::DoProcess(HostBufferRef* p_pBuff) {
                     packetData = convertedPacket.data();
                     packetSize = convertedPacket.size();
                 }
+            }
+
+            if (encoderInfo.fourCC == 'hvc1' && hevcPacketDebugCount < 3) {
+                g_Log(logLevelWarn,
+                      "FFmpeg Plugin :: HEVC packet[%d] converted=%d size=%zu firstbytes=%02X %02X %02X %02X %02X %02X %02X %02X",
+                      hevcPacketDebugCount, convertedPacket.empty() ? 0 : 1, packetSize,
+                      packetSize > 0 ? packetData[0] : 0, packetSize > 1 ? packetData[1] : 0,
+                      packetSize > 2 ? packetData[2] : 0, packetSize > 3 ? packetData[3] : 0,
+                      packetSize > 4 ? packetData[4] : 0, packetSize > 5 ? packetData[5] : 0,
+                      packetSize > 6 ? packetData[6] : 0, packetSize > 7 ? packetData[7] : 0);
+                ++hevcPacketDebugCount;
             }
 
             HostBufferRef outBuf(false);
