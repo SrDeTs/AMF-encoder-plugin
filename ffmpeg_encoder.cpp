@@ -52,7 +52,10 @@ AVPixelFormat GetHwPixelFormat(const IOPlugin::HardwareAcceleration hwAccelerati
     }
 }
 
-std::vector<std::string> GetContainerList(const IOPlugin::EncoderInfo& /*encoderInfo*/) {
+std::vector<std::string> GetContainerList(const IOPlugin::EncoderInfo& encoderInfo) {
+    if (encoderInfo.fourCC == 'hvc1') {
+        return {"mkv"};
+    }
     return {"mov", "mp4", "mkv"};
 }
 

@@ -10,26 +10,26 @@ set(WRAPPER_DIR "${BASE_DIR}/wrapper")
 set(LINUX_BUNDLE_DIR "${CMAKE_BINARY_DIR}/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64")
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
 set(CMAKE_BUILD_RPATH_USE_ORIGIN TRUE)
+option(USE_BUNDLED_FFMPEG "Prefer bundled FFmpeg from ./ffmpeg" ON)
 
 if (NOT MSVC)
     set(CMAKE_CXX_FLAGS "-fPIC -Wall -Wno-unused-variable -Wno-multichar")
 endif ()
 
-find_path(FFMPEG_INCLUDE_DIR libavcodec/avcodec.h)
-find_library(AVCODEC_LIBRARY avcodec)
-find_library(AVUTIL_LIBRARY avutil)
-find_library(SWSCALE_LIBRARY swscale)
-
-if (NOT FFMPEG_INCLUDE_DIR OR NOT AVCODEC_LIBRARY OR NOT AVUTIL_LIBRARY OR NOT SWSCALE_LIBRARY)
-    if (EXISTS "${FFMPEG_DIR}/include/libavcodec/avcodec.h" AND
-        EXISTS "${FFMPEG_DIR}/lib/libavcodec.a" AND
-        EXISTS "${FFMPEG_DIR}/lib/libavutil.a" AND
-        EXISTS "${FFMPEG_DIR}/lib/libswscale.a")
-        set(FFMPEG_INCLUDE_DIR "${FFMPEG_DIR}/include")
-        set(AVCODEC_LIBRARY "${FFMPEG_DIR}/lib/libavcodec.a")
-        set(AVUTIL_LIBRARY "${FFMPEG_DIR}/lib/libavutil.a")
-        set(SWSCALE_LIBRARY "${FFMPEG_DIR}/lib/libswscale.a")
-    endif ()
+if (USE_BUNDLED_FFMPEG AND
+    EXISTS "${FFMPEG_DIR}/include/libavcodec/avcodec.h" AND
+    EXISTS "${FFMPEG_DIR}/lib/libavcodec.a" AND
+    EXISTS "${FFMPEG_DIR}/lib/libavutil.a" AND
+    EXISTS "${FFMPEG_DIR}/lib/libswscale.a")
+    set(FFMPEG_INCLUDE_DIR "${FFMPEG_DIR}/include")
+    set(AVCODEC_LIBRARY "${FFMPEG_DIR}/lib/libavcodec.a")
+    set(AVUTIL_LIBRARY "${FFMPEG_DIR}/lib/libavutil.a")
+    set(SWSCALE_LIBRARY "${FFMPEG_DIR}/lib/libswscale.a")
+else ()
+    find_path(FFMPEG_INCLUDE_DIR libavcodec/avcodec.h)
+    find_library(AVCODEC_LIBRARY avcodec)
+    find_library(AVUTIL_LIBRARY avutil)
+    find_library(SWSCALE_LIBRARY swscale)
 endif ()
 
 message(STATUS "FFmpeg include dir: ${FFMPEG_INCLUDE_DIR}")
