@@ -1,0 +1,9 @@
+BasedOnStyle: Google
+IndentWidth: 4
+---
+Language: Cpp
+DerivePointerAlignment: false
+FixNamespaceComments: false
+PointerAlignment: Left
+SpacesInAngles: false
+ColumnLimit: 120
