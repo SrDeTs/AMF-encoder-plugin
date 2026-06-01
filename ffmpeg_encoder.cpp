@@ -51,7 +51,7 @@ AVPixelFormat GetHwPixelFormat(const IOPlugin::HardwareAcceleration hwAccelerati
 }
 
 std::vector<std::string> GetContainerList(const IOPlugin::EncoderInfo& /*encoderInfo*/) {
-    return {"mov", "mp4", "mkv"};
+    return {"mov", "mp4"};
 }
 
 bool UsesHwFrames(const IOPlugin::HardwareAcceleration hwAcceleration) { return false; }
