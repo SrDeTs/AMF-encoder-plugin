@@ -6,7 +6,6 @@
 #include "uisettings_controller.h"
 
 extern "C" {
-#include <libavcodec/bsf.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
@@ -44,8 +43,6 @@ class FFmpegEncoder : public IPluginCodecRef {
     AVPixelFormat pixelFormat{};
     AVPixelFormat srcPixelFormat{};
     bool useHwFrames{};
-    bool useHevcLengthPrefixedOutput{};
-    int hevcPacketDebugCount{};
     AVHWDeviceType hwDeviceType{AV_HWDEVICE_TYPE_NONE};
     AVPixelFormat hwPixelFormat{AV_PIX_FMT_NONE};
 

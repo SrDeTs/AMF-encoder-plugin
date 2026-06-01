@@ -14,7 +14,6 @@ Current repository state:
 
 Exposed encoders:
 - `h264_amf`
-- `hevc_amf`
 - `av1_amf`
 
 ## Goal
@@ -32,7 +31,7 @@ If AMF fails:
 - DaVinci Resolve
 - FFmpeg with AMF support
 - driver with real support for the target codec
-- AMF Video Encode for `h264_amf`, `hevc_amf`, and `av1_amf`
+- AMF Video Encode for `h264_amf` and `av1_amf`
 - CMake
 - a C++ compiler
 
@@ -54,7 +53,6 @@ Inspect encoder options:
 
 ```bash
 ffmpeg -hide_banner -h encoder=h264_amf
-ffmpeg -hide_banner -h encoder=hevc_amf
 ffmpeg -hide_banner -h encoder=av1_amf
 ```
 
@@ -102,7 +100,6 @@ cp -av build/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/* \
 Once loaded, Resolve exposes:
 
 - `H.264` -> `AMF 8-bit 4:2:0 (FFmpeg)`
-- `H.265` -> `AMF 8-bit 4:2:0 (FFmpeg)`, `AMF 10-bit 4:2:0 (FFmpeg)`
 - `AV1` -> `AMF 8-bit 4:2:0 (FFmpeg)`, `AMF 10-bit 4:2:0 (FFmpeg)`
 
 ## AMF plugin options
@@ -151,6 +148,7 @@ If this fails, the problem is likely in:
 
 - AMF Video support still varies by driver and GPU
 - a system may have AMF available but still not support encode for every codec
+- `H.265/HEVC AMF` has been removed from the Resolve-facing codec list in this plugin
 - `preset`, `usage`, and `async_depth` may have driver-specific limits
 - aggressive presets may become unstable depending on the AMF stack
 

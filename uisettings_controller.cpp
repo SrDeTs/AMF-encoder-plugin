@@ -135,7 +135,7 @@ void UISettingsController::SetFirstSupportedQualityMode() {
 StatusCode UISettingsController::RenderQuality(HostListRef* settingsList) const {
     const bool isAmf = encoderInfo.hwAcceleration == AMF;
     const bool hasQualityModes = encoderInfo.qualityModes != 0;
-    const bool hasAmfVideoOptions = encoderInfo.fourCC == 'avc1' || encoderInfo.fourCC == 'hvc1' || encoderInfo.fourCC == 'av01';
+    const bool hasAmfVideoOptions = encoderInfo.fourCC == 'avc1' || encoderInfo.fourCC == 'av01';
 
     if (!encoderInfo.presets.empty())
     {

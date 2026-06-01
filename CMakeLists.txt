@@ -51,7 +51,6 @@ set(SRCS
         av1_amf_encoder.cpp
         ffmpeg_encoder.cpp
         h264_amf_encoder.cpp
-        h265_amf_encoder.cpp
         plugin.cpp
         uisettings_controller.cpp
 )
@@ -60,7 +59,6 @@ set(HEADERS
         av1_amf_encoder.h
         ffmpeg_encoder.h
         h264_amf_encoder.h
-        h265_amf_encoder.h
         plugin.h
         uisettings_controller.h
 )

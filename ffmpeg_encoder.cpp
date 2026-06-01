@@ -5,7 +5,6 @@
 #include <cstring>
 
 extern "C" {
-#include <libavcodec/bsf.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/log.h>
@@ -53,146 +52,10 @@ AVPixelFormat GetHwPixelFormat(const IOPlugin::HardwareAcceleration hwAccelerati
 }
 
 std::vector<std::string> GetContainerList(const IOPlugin::EncoderInfo& encoderInfo) {
-    if (encoderInfo.fourCC == 'hvc1') {
-        return {"mkv"};
-    }
     return {"mov", "mp4", "mkv"};
 }
 
 bool UsesHwFrames(const IOPlugin::HardwareAcceleration hwAcceleration) { return false; }
-
-bool IsContainer(const std::string& container, const char* expected) {
-    if (container.size() != std::strlen(expected)) {
-        return false;
-    }
-
-    for (size_t i = 0; i < container.size(); ++i) {
-        const char actual = container[i];
-        if ((actual >= 'A' && actual <= 'Z' ? actual - 'A' + 'a' : actual) != expected[i]) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool HasPathExtension(const std::string& path, const char* expectedExtension) {
-    const size_t extensionLength = std::strlen(expectedExtension);
-    if (path.size() < extensionLength) {
-        return false;
-    }
-
-    const size_t start = path.size() - extensionLength;
-    for (size_t i = 0; i < extensionLength; ++i) {
-        const char actual = path[start + i];
-        if ((actual >= 'A' && actual <= 'Z' ? actual - 'A' + 'a' : actual) != expectedExtension[i]) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool UsesHevcLengthPrefixedOutput(const IOPlugin::EncoderInfo& encoderInfo, const IOPlugin::HostCodecConfigCommon& commonProps) {
-    if (encoderInfo.fourCC != 'hvc1') {
-        return false;
-    }
-
-    return IsContainer(commonProps.GetContainer(), "mp4") || IsContainer(commonProps.GetContainer(), "mov") ||
-           HasPathExtension(commonProps.GetPath(), ".mp4") || HasPathExtension(commonProps.GetPath(), ".mov");
-}
-
-std::vector<uint8_t> ConvertAnnexBToLengthPrefixed(const uint8_t* data, const size_t size) {
-    std::vector<uint8_t> converted;
-    converted.reserve(size);
-
-    size_t pos = 0;
-    auto findStartCode = [&](size_t from, size_t& startCodeOffset, size_t& startCodeSize) -> bool {
-        for (size_t i = from; i + 3 < size; ++i) {
-            if (data[i] == 0 && data[i + 1] == 0) {
-                if (data[i + 2] == 1) {
-                    startCodeOffset = i;
-                    startCodeSize = 3;
-                    return true;
-                }
-                if (i + 4 < size && data[i + 2] == 0 && data[i + 3] == 1) {
-                    startCodeOffset = i;
-                    startCodeSize = 4;
-                    return true;
-                }
-            }
-        }
-        return false;
-    };
-
-    size_t startCodeOffset = 0;
-    size_t startCodeSize = 0;
-    if (!findStartCode(0, startCodeOffset, startCodeSize)) {
-        return {};
-    }
-
-    pos = startCodeOffset;
-    while (pos < size) {
-        if (!findStartCode(pos, startCodeOffset, startCodeSize)) {
-            break;
-        }
-
-        const size_t nalStart = startCodeOffset + startCodeSize;
-        size_t nextStartCodeOffset = 0;
-        size_t nextStartCodeSize = 0;
-        const bool hasNext = findStartCode(nalStart, nextStartCodeOffset, nextStartCodeSize);
-        const size_t nalEnd = hasNext ? nextStartCodeOffset : size;
-
-        if (nalEnd > nalStart) {
-            const uint32_t nalSize = static_cast<uint32_t>(nalEnd - nalStart);
-            converted.push_back(static_cast<uint8_t>((nalSize >> 24) & 0xFF));
-            converted.push_back(static_cast<uint8_t>((nalSize >> 16) & 0xFF));
-            converted.push_back(static_cast<uint8_t>((nalSize >> 8) & 0xFF));
-            converted.push_back(static_cast<uint8_t>(nalSize & 0xFF));
-            converted.insert(converted.end(), data + nalStart, data + nalEnd);
-        }
-
-        if (!hasNext) {
-            break;
-        }
-
-        pos = nextStartCodeOffset;
-    }
-
-    return converted;
-}
-
-std::vector<uint8_t> GetHevcAnnexBMagicCookie(AVCodecContext* ctx) {
-    std::vector<uint8_t> cookie;
-
-    const AVBitStreamFilter* bsf = av_bsf_get_by_name("hevc_mp4toannexb");
-    if (bsf == nullptr) {
-        return cookie;
-    }
-
-    AVBSFContext* bsfCtx = nullptr;
-    if (av_bsf_alloc(bsf, &bsfCtx) < 0 || bsfCtx == nullptr) {
-        return cookie;
-    }
-
-    if (avcodec_parameters_from_context(bsfCtx->par_in, ctx) < 0) {
-        av_bsf_free(&bsfCtx);
-        return cookie;
-    }
-
-    bsfCtx->time_base_in = ctx->time_base;
-    if (av_bsf_init(bsfCtx) < 0) {
-        av_bsf_free(&bsfCtx);
-        return cookie;
-    }
-
-    if (bsfCtx->par_out->extradata != nullptr && bsfCtx->par_out->extradata_size > 0) {
-        cookie.assign(bsfCtx->par_out->extradata, bsfCtx->par_out->extradata + bsfCtx->par_out->extradata_size);
-    }
-
-    av_bsf_free(&bsfCtx);
-    return cookie;
-}
 
 const char* GetAmfUsageName(const uint32_t fourCC, const int usage) {
     if (fourCC == 'av01') {
@@ -261,7 +124,7 @@ const char* GetAmfPresetName(const uint32_t fourCC, const int preset) {
 }
 
 bool HasAmfVideoEncodeOptions(const IOPlugin::EncoderInfo& encoderInfo) {
-    return encoderInfo.fourCC == 'avc1' || encoderInfo.fourCC == 'hvc1' || encoderInfo.fourCC == 'av01';
+    return encoderInfo.fourCC == 'avc1' || encoderInfo.fourCC == 'av01';
 }
 
 int SetCustomError(HostBufferRef* buffer, const std::string& message, const StatusCode code) {
@@ -392,12 +255,6 @@ StatusCode FFmpegEncoder::DoOpen(HostBufferRef* p_pBuff) {
     pixelFormat = format.pixelFormat;
     srcPixelFormat = format.srcPixelFormat;
     useHwFrames = UsesHwFrames(encoderInfo.hwAcceleration);
-    useHevcLengthPrefixedOutput = UsesHevcLengthPrefixedOutput(encoderInfo, commonProps);
-    if (encoderInfo.fourCC == 'hvc1') {
-        g_Log(logLevelWarn, "FFmpeg Plugin :: HEVC output mode=%s container='%s' path='%s'",
-              useHevcLengthPrefixedOutput ? "hvcC/length-prefixed" : "AnnexB/anxb", commonProps.GetContainer().c_str(),
-              commonProps.GetPath().c_str());
-    }
     hwDeviceType = GetHwDeviceType(encoderInfo.hwAcceleration);
     hwPixelFormat = GetHwPixelFormat(encoderInfo.hwAcceleration);
 
@@ -550,22 +407,11 @@ StatusCode FFmpegEncoder::DoOpen(HostBufferRef* p_pBuff) {
         }
     }
 
-    std::vector<uint8_t> hevcAnnexBCookie;
     const uint8_t* magicCookie = ctx->extradata;
     int magicCookieSize = ctx->extradata_size;
     uint32_t magicCookieType = 0;
     if (encoderInfo.fourCC == 'avc1') {
         magicCookieType = 'avcC';
-    } else if (encoderInfo.fourCC == 'hvc1') {
-        hevcAnnexBCookie = GetHevcAnnexBMagicCookie(ctx);
-        if (!hevcAnnexBCookie.empty()) {
-            magicCookie = hevcAnnexBCookie.data();
-            magicCookieSize = static_cast<int>(hevcAnnexBCookie.size());
-        }
-        magicCookieType = 0;
-        g_Log(logLevelWarn, "FFmpeg Plugin :: HEVC cookie size=%d firstbytes=%02X %02X %02X %02X",
-              magicCookieSize, magicCookieSize > 0 ? magicCookie[0] : 0, magicCookieSize > 1 ? magicCookie[1] : 0,
-              magicCookieSize > 2 ? magicCookie[2] : 0, magicCookieSize > 3 ? magicCookie[3] : 0);
     } else if (encoderInfo.fourCC == 'av01') {
         magicCookieType = 'av1C';
     }
@@ -601,10 +447,8 @@ StatusCode FFmpegEncoder::ApplyOptions(AVCodecContext* ctx, UISettingsController
                 if (const int err = av_opt_set_int(ctx->priv_data, "qp_p", settings.GetQP(), 0); err < 0) {
                     return failAmfOption("qp_p", err);
                 }
-                if (encoderInfo.fourCC != 'hvc1') {
-                    if (const int err = av_opt_set_int(ctx->priv_data, "qp_b", settings.GetQP(), 0); err < 0) {
-                        return failAmfOption("qp_b", err);
-                    }
+                if (const int err = av_opt_set_int(ctx->priv_data, "qp_b", settings.GetQP(), 0); err < 0) {
+                    return failAmfOption("qp_b", err);
                 }
                 break;
             case CRF:
@@ -639,20 +483,6 @@ StatusCode FFmpegEncoder::ApplyOptions(AVCodecContext* ctx, UISettingsController
             if (bitDepth > 8 && encoderInfo.fourCC != 'avc1') {
                 if (const int err = av_opt_set_int(ctx->priv_data, "bitdepth", bitDepth, 0); err < 0) {
                     return failAmfOption("bitdepth", err);
-                }
-            }
-
-            if (encoderInfo.fourCC == 'hvc1') {
-                if (const int err = av_opt_set(ctx->priv_data, "header_insertion_mode", "idr", 0); err < 0) {
-                    return failAmfOption("header_insertion_mode", err);
-                }
-                if (const int err = av_opt_set_int(ctx->priv_data, "aud", 1, 0); err < 0) {
-                    return failAmfOption("aud", err);
-                }
-
-                const char* profileName = bitDepth > 8 ? "main10" : "main";
-                if (const int err = av_opt_set(ctx->priv_data, "profile", profileName, 0); err < 0) {
-                    return failAmfOption("profile", err);
                 }
             }
 
@@ -870,31 +700,8 @@ StatusCode FFmpegEncoder::DoProcess(HostBufferRef* p_pBuff) {
         }
 
         auto sendPacketToHost = [&](AVPacket* outPacket) -> StatusCode {
-            const uint8_t* packetData = outPacket->data;
-            size_t packetSize = outPacket->size;
-            std::vector<uint8_t> convertedPacket;
-
-            if (useHevcLengthPrefixedOutput) {
-                convertedPacket = ConvertAnnexBToLengthPrefixed(outPacket->data, outPacket->size);
-                if (!convertedPacket.empty()) {
-                    packetData = convertedPacket.data();
-                    packetSize = convertedPacket.size();
-                }
-            }
-
-            if (encoderInfo.fourCC == 'hvc1' && hevcPacketDebugCount < 3) {
-                g_Log(logLevelWarn,
-                      "FFmpeg Plugin :: HEVC packet[%d] converted=%d size=%zu firstbytes=%02X %02X %02X %02X %02X %02X %02X %02X",
-                      hevcPacketDebugCount, convertedPacket.empty() ? 0 : 1, packetSize,
-                      packetSize > 0 ? packetData[0] : 0, packetSize > 1 ? packetData[1] : 0,
-                      packetSize > 2 ? packetData[2] : 0, packetSize > 3 ? packetData[3] : 0,
-                      packetSize > 4 ? packetData[4] : 0, packetSize > 5 ? packetData[5] : 0,
-                      packetSize > 6 ? packetData[6] : 0, packetSize > 7 ? packetData[7] : 0);
-                ++hevcPacketDebugCount;
-            }
-
             HostBufferRef outBuf(false);
-            if (!outBuf.IsValid() || !outBuf.Resize(packetSize)) {
+            if (!outBuf.IsValid() || !outBuf.Resize(outPacket->size)) {
                 g_Log(logLevelError, "FFmpeg Plugin :: Failed to resize output buffer");
                 return errAlloc;
             }
@@ -907,7 +714,7 @@ StatusCode FFmpegEncoder::DoProcess(HostBufferRef* p_pBuff) {
                 return errAlloc;
             }
 
-            memcpy(outBufPtr, packetData, packetSize);
+            memcpy(outBufPtr, outPacket->data, outPacket->size);
 
             outBuf.SetProperty(pIOPropPTS, propTypeInt64, &outPacket->pts, 1);
             outBuf.SetProperty(pIOPropDTS, propTypeInt64, &outPacket->dts, 1);
