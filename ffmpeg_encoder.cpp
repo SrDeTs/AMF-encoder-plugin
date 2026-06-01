@@ -72,12 +72,30 @@ bool IsContainer(const std::string& container, const char* expected) {
     return true;
 }
 
+bool HasPathExtension(const std::string& path, const char* expectedExtension) {
+    const size_t extensionLength = std::strlen(expectedExtension);
+    if (path.size() < extensionLength) {
+        return false;
+    }
+
+    const size_t start = path.size() - extensionLength;
+    for (size_t i = 0; i < extensionLength; ++i) {
+        const char actual = path[start + i];
+        if ((actual >= 'A' && actual <= 'Z' ? actual - 'A' + 'a' : actual) != expectedExtension[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool UsesHevcLengthPrefixedOutput(const IOPlugin::EncoderInfo& encoderInfo, const IOPlugin::HostCodecConfigCommon& commonProps) {
     if (encoderInfo.fourCC != 'hvc1') {
         return false;
     }
 
-    return IsContainer(commonProps.GetContainer(), "mp4") || IsContainer(commonProps.GetContainer(), "mov");
+    return IsContainer(commonProps.GetContainer(), "mp4") || IsContainer(commonProps.GetContainer(), "mov") ||
+           HasPathExtension(commonProps.GetPath(), ".mp4") || HasPathExtension(commonProps.GetPath(), ".mov");
 }
 
 std::vector<uint8_t> ConvertAnnexBToLengthPrefixed(const uint8_t* data, const size_t size) {
@@ -339,6 +357,11 @@ StatusCode FFmpegEncoder::DoOpen(HostBufferRef* p_pBuff) {
     srcPixelFormat = format.srcPixelFormat;
     useHwFrames = UsesHwFrames(encoderInfo.hwAcceleration);
     useHevcLengthPrefixedOutput = UsesHevcLengthPrefixedOutput(encoderInfo, commonProps);
+    if (encoderInfo.fourCC == 'hvc1') {
+        g_Log(logLevelInfo, "FFmpeg Plugin :: HEVC output mode=%s container='%s' path='%s'",
+              useHevcLengthPrefixedOutput ? "hvcC/length-prefixed" : "AnnexB/anxb", commonProps.GetContainer().c_str(),
+              commonProps.GetPath().c_str());
+    }
     hwDeviceType = GetHwDeviceType(encoderInfo.hwAcceleration);
     hwPixelFormat = GetHwPixelFormat(encoderInfo.hwAcceleration);
 
