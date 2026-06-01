@@ -1,6 +1,7 @@
 #include "ffmpeg_encoder.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 
@@ -140,6 +141,10 @@ const char* GetAmfPresetName(const uint32_t fourCC, const int preset) {
 
 bool HasAmfVideoEncodeOptions(const IOPlugin::EncoderInfo& encoderInfo) {
     return encoderInfo.fourCC == 'avc1' || encoderInfo.fourCC == 'hvc1' || encoderInfo.fourCC == 'av01';
+}
+
+bool ShouldUseHevcAnnexB(const IOPlugin::EncoderInfo& encoderInfo) {
+    return encoderInfo.fourCC == 'hvc1';
 }
 
 int SetCustomError(HostBufferRef* buffer, const std::string& message, const StatusCode code) {
@@ -422,15 +427,51 @@ StatusCode FFmpegEncoder::DoOpen(HostBufferRef* p_pBuff) {
         }
     }
 
-    p_pBuff->SetProperty(pIOPropMagicCookie, propTypeUInt8, ctx->extradata, ctx->extradata_size);
+    if (ShouldUseHevcAnnexB(encoderInfo)) {
+        const AVBitStreamFilter* bsf = av_bsf_get_by_name("hevc_mp4toannexb");
+        if (bsf == nullptr) {
+            const std::string message = "Failed to load HEVC Annex B bitstream filter.";
+            g_Log(logLevelError, "FFmpeg Plugin :: %s", message.c_str());
+            return static_cast<StatusCode>(SetCustomError(p_pBuff, message, errUnsupported));
+        }
+
+        if (const int err = av_bsf_alloc(bsf, &outputBsf); err < 0 || outputBsf == nullptr) {
+            const std::string message = "Failed to allocate HEVC Annex B bitstream filter: " + av_err2string(err);
+            g_Log(logLevelError, "FFmpeg Plugin :: %s", message.c_str());
+            return static_cast<StatusCode>(SetCustomError(p_pBuff, message, errUnsupported));
+        }
+
+        if (const int err = avcodec_parameters_from_context(outputBsf->par_in, ctx); err < 0) {
+            const std::string message =
+                "Failed to populate HEVC Annex B bitstream filter parameters: " + av_err2string(err);
+            g_Log(logLevelError, "FFmpeg Plugin :: %s", message.c_str());
+            return static_cast<StatusCode>(SetCustomError(p_pBuff, message, errUnsupported));
+        }
+
+        outputBsf->time_base_in = ctx->time_base;
+
+        if (const int err = av_bsf_init(outputBsf); err < 0) {
+            const std::string message = "Failed to initialize HEVC Annex B bitstream filter: " + av_err2string(err);
+            g_Log(logLevelError, "FFmpeg Plugin :: %s", message.c_str());
+            return static_cast<StatusCode>(SetCustomError(p_pBuff, message, errUnsupported));
+        }
+    }
+
+    const uint8_t* magicCookie = ctx->extradata;
+    int magicCookieSize = ctx->extradata_size;
     uint32_t magicCookieType = 0;
-    if (encoderInfo.fourCC == 'avc1') {
+    if (outputBsf != nullptr) {
+        magicCookie = outputBsf->par_out->extradata;
+        magicCookieSize = outputBsf->par_out->extradata_size;
+        magicCookieType = 'anxb';
+    } else if (encoderInfo.fourCC == 'avc1') {
         magicCookieType = 'avcC';
     } else if (encoderInfo.fourCC == 'hvc1') {
         magicCookieType = 'hvcC';
     } else if (encoderInfo.fourCC == 'av01') {
         magicCookieType = 'av1C';
     }
+    p_pBuff->SetProperty(pIOPropMagicCookie, propTypeUInt8, magicCookie, magicCookieSize);
     p_pBuff->SetProperty(pIOPropMagicCookieType, propTypeUInt32, &magicCookieType, 1);
 
     const uint32_t temporal = ctx->has_b_frames;
@@ -500,6 +541,20 @@ StatusCode FFmpegEncoder::ApplyOptions(AVCodecContext* ctx, UISettingsController
             if (bitDepth > 8 && encoderInfo.fourCC != 'avc1') {
                 if (const int err = av_opt_set_int(ctx->priv_data, "bitdepth", bitDepth, 0); err < 0) {
                     return failAmfOption("bitdepth", err);
+                }
+            }
+
+            if (encoderInfo.fourCC == 'hvc1') {
+                if (const int err = av_opt_set(ctx->priv_data, "header_insertion_mode", "idr", 0); err < 0) {
+                    return failAmfOption("header_insertion_mode", err);
+                }
+                if (const int err = av_opt_set_int(ctx->priv_data, "aud", 1, 0); err < 0) {
+                    return failAmfOption("aud", err);
+                }
+
+                const char* profileName = bitDepth > 8 ? "main10" : "main";
+                if (const int err = av_opt_set(ctx->priv_data, "profile", profileName, 0); err < 0) {
+                    return failAmfOption("profile", err);
                 }
             }
 
@@ -716,33 +771,70 @@ StatusCode FFmpegEncoder::DoProcess(HostBufferRef* p_pBuff) {
             return errFail;
         }
 
-        HostBufferRef outBuf(false);
-        if (!outBuf.IsValid() || !outBuf.Resize(pkt->size)) {
-            g_Log(logLevelError, "FFmpeg Plugin :: Failed to resize output buffer");
+        auto sendPacketToHost = [&](AVPacket* outPacket) -> StatusCode {
+            HostBufferRef outBuf(false);
+            if (!outBuf.IsValid() || !outBuf.Resize(outPacket->size)) {
+                g_Log(logLevelError, "FFmpeg Plugin :: Failed to resize output buffer");
+                return errAlloc;
+            }
+
+            char* outBufPtr = nullptr;
+            size_t outBufSize = 0;
+
+            if (!outBuf.LockBuffer(&outBufPtr, &outBufSize)) {
+                g_Log(logLevelError, "FFmpeg Plugin :: Failed to lock the output buffer");
+                return errAlloc;
+            }
+
+            memcpy(outBufPtr, outPacket->data, outPacket->size);
+
+            outBuf.SetProperty(pIOPropPTS, propTypeInt64, &outPacket->pts, 1);
+            outBuf.SetProperty(pIOPropDTS, propTypeInt64, &outPacket->dts, 1);
+
+            const uint8_t isKeyFrame = outPacket->flags & AV_PKT_FLAG_KEY ? 1 : 0;
+            outBuf.SetProperty(pIOPropIsKeyFrame, propTypeUInt8, &isKeyFrame, 1);
+
+            m_pCallback->SendOutput(&outBuf);
+            return errNone;
+        };
+
+        if (outputBsf != nullptr) {
+            if (const int err = av_bsf_send_packet(outputBsf, pkt); err < 0) {
+                g_Log(logLevelError, "FFmpeg Plugin :: Failed to send packet to HEVC Annex B filter. %s",
+                      av_err2str(err));
+                av_packet_unref(pkt);
+                return errFail;
+            }
+
             av_packet_unref(pkt);
-            return errAlloc;
-        }
 
-        char* outBufPtr = nullptr;
-        size_t outBufSize = 0;
+            while (true) {
+                ret = av_bsf_receive_packet(outputBsf, pkt);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                    av_packet_unref(pkt);
+                    break;
+                }
 
-        if (!outBuf.LockBuffer(&outBufPtr, &outBufSize)) {
-            g_Log(logLevelError, "FFmpeg Plugin :: Failed to lock the output buffer");
+                if (ret < 0) {
+                    g_Log(logLevelError, "FFmpeg Plugin :: Failed to read packet from HEVC Annex B filter. %s",
+                          av_err2str(ret));
+                    av_packet_unref(pkt);
+                    return errFail;
+                }
+
+                const StatusCode err = sendPacketToHost(pkt);
+                av_packet_unref(pkt);
+                if (err != errNone) {
+                    return err;
+                }
+            }
+        } else {
+            const StatusCode err = sendPacketToHost(pkt);
             av_packet_unref(pkt);
-            return errAlloc;
+            if (err != errNone) {
+                return err;
+            }
         }
-
-        memcpy(outBufPtr, pkt->data, pkt->size);
-
-        outBuf.SetProperty(pIOPropPTS, propTypeInt64, &pkt->pts, 1);
-        outBuf.SetProperty(pIOPropDTS, propTypeInt64, &pkt->dts, 1);
-
-        const uint8_t isKeyFrame = pkt->flags & AV_PKT_FLAG_KEY ? 1 : 0;
-        outBuf.SetProperty(pIOPropIsKeyFrame, propTypeUInt8, &isKeyFrame, 1);
-
-        av_packet_unref(pkt);
-
-        m_pCallback->SendOutput(&outBuf);
     }
 }
 
@@ -846,6 +938,7 @@ FFmpegEncoder::~FFmpegEncoder() {
     if (ctx != nullptr) avcodec_free_context(&ctx);
     if (hwFramesRef != nullptr) av_buffer_unref(&hwFramesRef);
     if (hwDeviceCtx != nullptr) av_buffer_unref(&hwDeviceCtx);
+    if (outputBsf != nullptr) av_bsf_free(&outputBsf);
     if (swsCtx != nullptr) sws_freeContext(swsCtx);
     if (pkt != nullptr) av_packet_free(&pkt);
     if (swFrame != nullptr) av_frame_free(&swFrame);
