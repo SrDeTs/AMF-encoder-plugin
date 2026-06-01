@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 extern "C" {
+#include <libavcodec/bsf.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/log.h>
@@ -51,10 +53,24 @@ AVPixelFormat GetHwPixelFormat(const IOPlugin::HardwareAcceleration hwAccelerati
 }
 
 std::vector<std::string> GetContainerList(const IOPlugin::EncoderInfo& /*encoderInfo*/) {
-    return {"mov", "mp4"};
+    return {"mov", "mp4", "mkv"};
 }
 
 bool UsesHwFrames(const IOPlugin::HardwareAcceleration hwAcceleration) { return false; }
+
+bool IsContainer(const std::string& container, const char* expected) {
+    if (container.size() != std::strlen(expected)) {
+        return false;
+    }
+
+    for (size_t i = 0; i < container.size(); ++i) {
+        if (static_cast<char>(std::tolower(static_cast<unsigned char>(container[i]))) != expected[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 const char* GetAmfUsageName(const uint32_t fourCC, const int usage) {
     if (fourCC == 'av01') {

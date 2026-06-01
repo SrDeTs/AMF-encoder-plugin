@@ -289,7 +289,10 @@ namespace IOPlugin
             return;
         }
 
-        p_pOptions->GetString(pIOPropContainerList, m_Container);
+        if (!p_pOptions->GetString(pIOPropContainerExt, m_Container))
+        {
+            p_pOptions->GetString(pIOPropContainerList, m_Container);
+        }
         p_pOptions->GetString(pIOPropPath, m_Path);
         p_pOptions->GetUINT32(pIOPropWidth, m_Width);
         p_pOptions->GetUINT32(pIOPropHeight, m_Height);
