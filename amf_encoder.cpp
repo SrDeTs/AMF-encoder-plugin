@@ -3,9 +3,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <exception>
+#include <limits>
+#include <new>
+#include <system_error>
 #include <thread>
 #include <vector>
 
+#include "h264_config.h"
 #include "hevc_config.h"
 #include "rgb16_to_p010.h"
 
@@ -27,6 +32,14 @@ bool IsHevc(const EncoderDescriptor& descriptor) {
     return descriptor.fourCC == MakeFourCC('h', 'v', 'c', '1');
 }
 
+bool IsH264(const EncoderDescriptor& descriptor) {
+    return descriptor.fourCC == MakeFourCC('a', 'v', 'c', '1');
+}
+
+constexpr size_t kSurfacePoolSize = 6;
+constexpr auto kSurfaceWaitTimeout = std::chrono::seconds(5);
+constexpr auto kDrainTimeout = std::chrono::seconds(30);
+
 }  // namespace
 
 AMFEncoder::AMFEncoder(const EncoderDescriptor& descriptor, const uint32_t formatIndex)
@@ -45,8 +58,11 @@ StatusCode AMFEncoder::SetError(HostBufferRef* buffer, const StatusCode status, 
 }
 
 void AMFEncoder::ReleaseResources() {
+    StopOutputThread();
     if (encoder != nullptr) {
         encoder->Terminate();
+    }
+    if (encoder != nullptr) {
         encoder->Release();
         encoder = nullptr;
     }
@@ -55,7 +71,15 @@ void AMFEncoder::ReleaseResources() {
         context->Release();
         context = nullptr;
     }
+    ClearSurfacePool();
     factory = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(outputMutex);
+        pendingPackets.clear();
+        outputError.clear();
+        outputEof = false;
+    }
+    outputFailed = false;
     drainRequested = false;
     inputLayoutLogged = false;
     inputAlignmentKnown = false;
@@ -272,13 +296,14 @@ StatusCode AMFEncoder::ConfigureEncoder(HostBufferRef* buffer, const uint32_t fr
 StatusCode AMFEncoder::SetMagicCookie(HostBufferRef* buffer) {
     const bool av1 = IsAv1(descriptor);
     const bool hevc = IsHevc(descriptor);
+    const bool h264 = IsH264(descriptor);
     const wchar_t* property = av1 ? AMF_VIDEO_ENCODER_AV1_EXTRA_DATA
                                   : (hevc ? AMF_VIDEO_ENCODER_HEVC_EXTRADATA : AMF_VIDEO_ENCODER_EXTRADATA);
     amf::AMFVariant value;
     const AMF_RESULT result = encoder->GetProperty(property, &value);
     if (result != AMF_OK) {
-        if (hevc) {
-            return SetError(buffer, errFail, "Could not read HEVC codec header: " + ResultText(result));
+        if (hevc || h264) {
+            return SetError(buffer, errFail, "Could not read codec header: " + ResultText(result));
         }
         g_Log(logLevelWarn, "AMF encoder: no codec header (%s)", ResultText(result).c_str());
         return errNone;
@@ -286,7 +311,7 @@ StatusCode AMFEncoder::SetMagicCookie(HostBufferRef* buffer) {
 
     amf::AMFBufferPtr extraData(static_cast<amf::AMFInterface*>(value));
     if (extraData == nullptr || extraData->GetNative() == nullptr || extraData->GetSize() == 0) {
-        if (hevc) return SetError(buffer, errFail, "AMD AMF returned an empty HEVC codec header.");
+        if (hevc || h264) return SetError(buffer, errFail, "AMD AMF returned an empty codec header.");
         g_Log(logLevelWarn, "AMF encoder: codec header is empty");
         return errNone;
     }
@@ -329,6 +354,14 @@ StatusCode AMFEncoder::SetMagicCookie(HostBufferRef* buffer) {
         cookieType = MakeFourCC('h', 'v', 'c', 'C');
         cookieBytes = formattedCookie.data();
         cookieSize = formattedCookie.size();
+    } else if (h264) {
+        std::string conversionError;
+        if (!BuildH264DecoderConfigurationRecord(extraBytes, extraSize, formattedCookie, conversionError)) {
+            return SetError(buffer, errFail, conversionError);
+        }
+        cookieType = MakeFourCC('a', 'v', 'c', 'C');
+        cookieBytes = formattedCookie.data();
+        cookieSize = formattedCookie.size();
     }
 
     const StatusCode cookieStatus =
@@ -337,7 +370,7 @@ StatusCode AMFEncoder::SetMagicCookie(HostBufferRef* buffer) {
     if (cookieStatus != errNone || typeStatus != errNone) {
         return SetError(buffer, errFail, "Could not set AMF codec header for Resolve.");
     }
-    const char* headerType = av1 ? "av1C" : (hevc ? "hvcC" : "Annex B");
+    const char* headerType = av1 ? "av1C" : (hevc ? "hvcC" : "avcC");
     g_Log(logLevelInfo, "AMF encoder: supplied %s codec header (%zu bytes)", headerType, cookieSize);
     return errNone;
 }
@@ -382,7 +415,18 @@ StatusCode AMFEncoder::DoOpen(HostBufferRef* buffer) {
     if (result != AMF_OK || encoder == nullptr) {
         return SetError(buffer, errNoCodec, "Could not create AMD AMF component: " + ResultText(result));
     }
-    if (const StatusCode status = ConfigureEncoder(buffer, frameRateNum, frameRateDen); status != errNone) return status;
+    if (const StatusCode status = ConfigureEncoder(buffer, frameRateNum, frameRateDen); status != errNone) {
+        ReleaseResources();
+        return status;
+    }
+    if (const StatusCode status = InitializeSurfacePool(buffer); status != errNone) {
+        ReleaseResources();
+        return status;
+    }
+    if (const StatusCode status = StartOutputThread(buffer); status != errNone) {
+        ReleaseResources();
+        return status;
+    }
 
     const uint8_t multipass = 0;
     const uint32_t temporalReordering = 0;
@@ -391,8 +435,115 @@ StatusCode AMFEncoder::DoOpen(HostBufferRef* buffer) {
     return errNone;
 }
 
+StatusCode AMFEncoder::InitializeSurfacePool(HostBufferRef* errorBuffer) {
+    if (context == nullptr || descriptor.formats.empty() || formatIndex >= descriptor.formats.size()) {
+        return SetError(errorBuffer, errInvalidOperation, "Cannot initialize the AMF surface pool.");
+    }
+    if ((width & 1) != 0 || (height & 1) != 0) {
+        return SetError(errorBuffer, errInvalidParam, "AMF 4:2:0 encoding requires even frame dimensions.");
+    }
+
+    const EncoderFormat& format = descriptor.formats[formatIndex];
+    size_t bytesPerSample = 0;
+    if (format.surfaceFormat == amf::AMF_SURFACE_NV12) {
+        bytesPerSample = 1;
+    } else if (format.surfaceFormat == amf::AMF_SURFACE_P010) {
+        bytesPerSample = 2;
+    } else {
+        return SetError(errorBuffer, errUnsupported, "AMF surface pool supports only NV12 and P010.");
+    }
+
+    constexpr size_t pitchAlignment = 64;
+    const size_t rowBytes = static_cast<size_t>(width) * bytesPerSample;
+    if (rowBytes > std::numeric_limits<size_t>::max() - (pitchAlignment - 1)) {
+        return SetError(errorBuffer, errAlloc, "AMF surface dimensions are too large.");
+    }
+    const size_t pitch = (rowBytes + pitchAlignment - 1) & ~(pitchAlignment - 1);
+    const size_t rows = static_cast<size_t>(height) + static_cast<size_t>(height) / 2;
+    if (pitch > static_cast<size_t>(std::numeric_limits<amf_int32>::max()) ||
+        (rows != 0 && pitch > std::numeric_limits<size_t>::max() / rows)) {
+        return SetError(errorBuffer, errAlloc, "AMF surface dimensions are too large.");
+    }
+
+    std::vector<SurfaceSlot> newPool;
+    try {
+        newPool.resize(kSurfacePoolSize);
+        for (SurfaceSlot& slot : newPool) slot.bytes.resize(pitch * rows);
+    } catch (const std::bad_alloc&) {
+        return SetError(errorBuffer, errAlloc, "Could not allocate AMF host surface pool.");
+    }
+
+    {
+        const std::lock_guard<std::mutex> lock(surfaceMutex);
+        surfacePool = std::move(newPool);
+        surfacePitch = static_cast<int>(pitch);
+    }
+    g_Log(logLevelInfo, "AMF encoder: initialized %zu reusable host buffers (%d-byte pitch)", kSurfacePoolSize,
+          surfacePitch);
+    return errNone;
+}
+
+StatusCode AMFEncoder::AcquireSurface(HostBufferRef* errorBuffer, amf::AMFSurfacePtr& surface) {
+    std::unique_lock<std::mutex> lock(surfaceMutex);
+    const bool ready = surfaceAvailable.wait_for(lock, kSurfaceWaitTimeout, [this] {
+        if (stopOutput || outputFailed) return true;
+        return std::any_of(surfacePool.begin(), surfacePool.end(),
+                           [](const SurfaceSlot& slot) { return slot.available; });
+    });
+    if (!ready) {
+        return SetError(errorBuffer, errAlloc, "Timed out waiting for a reusable AMF input surface.");
+    }
+    if (outputFailed) {
+        lock.unlock();
+        return SetError(errorBuffer, errFail, GetOutputError());
+    }
+
+    for (SurfaceSlot& slot : surfacePool) {
+        if (!slot.available) continue;
+        slot.available = false;
+        amf::AMFSurface* rawSurface = nullptr;
+        const EncoderFormat& format = descriptor.formats[formatIndex];
+        const AMF_RESULT result = context->CreateSurfaceFromHostNative(
+            format.surfaceFormat, width, height, surfacePitch, height, slot.bytes.data(), &rawSurface, this);
+        if (result != AMF_OK || rawSurface == nullptr) {
+            slot.available = true;
+            lock.unlock();
+            surfaceAvailable.notify_one();
+            return SetError(errorBuffer, errAlloc, "Could not wrap reusable AMF host surface: " + ResultText(result));
+        }
+        slot.activeSurface = rawSurface;
+        surface.Attach(rawSurface);
+        return errNone;
+    }
+    return SetError(errorBuffer, errInvalidOperation, "AMF surface pool stopped unexpectedly.");
+}
+
+void AMFEncoder::ReleaseSurface(amf::AMFSurface* surface) {
+    if (surface == nullptr) return;
+    {
+        const std::lock_guard<std::mutex> lock(surfaceMutex);
+        for (SurfaceSlot& slot : surfacePool) {
+            if (slot.activeSurface != surface) continue;
+            slot.activeSurface = nullptr;
+            slot.available = true;
+            break;
+        }
+    }
+    surfaceAvailable.notify_one();
+}
+
+void AMF_STD_CALL AMFEncoder::OnSurfaceDataRelease(amf::AMFSurface* surface) {
+    ReleaseSurface(surface);
+}
+
+void AMFEncoder::ClearSurfacePool() {
+    const std::lock_guard<std::mutex> lock(surfaceMutex);
+    surfacePool.clear();
+    surfacePitch = 0;
+}
+
 StatusCode AMFEncoder::CopyInputFrame(HostBufferRef* buffer, amf::AMFSurfacePtr& surface) {
-    if (buffer == nullptr || !buffer->IsValid()) return errInvalidParam;
+    if (buffer == nullptr || !buffer->IsValid() || surface == nullptr) return errInvalidParam;
 
     char* input = nullptr;
     size_t inputSize = 0;
@@ -498,13 +649,6 @@ StatusCode AMFEncoder::CopyInputFrame(HostBufferRef* buffer, amf::AMFSurfacePtr&
         inputLayoutLogged = true;
     }
 
-    amf::AMFSurface* rawSurface = nullptr;
-    const AMF_RESULT allocation = context->AllocSurface(amf::AMF_MEMORY_HOST, format.surfaceFormat, width, height, &rawSurface);
-    if (allocation != AMF_OK || rawSurface == nullptr) {
-        buffer->UnlockBuffer();
-        return SetError(buffer, errAlloc, "Could not allocate AMF host surface: " + ResultText(allocation));
-    }
-    surface.Attach(rawSurface);
     amf::AMFPlane* yPlane = surface->GetPlane(amf::AMF_PLANE_Y);
     amf::AMFPlane* uvPlane = surface->GetPlane(amf::AMF_PLANE_UV);
     if (yPlane == nullptr || uvPlane == nullptr || yPlane->GetNative() == nullptr || uvPlane->GetNative() == nullptr) {
@@ -643,104 +787,224 @@ StatusCode AMFEncoder::CopyInputFrame(HostBufferRef* buffer, amf::AMFSurfacePtr&
     return errNone;
 }
 
-StatusCode AMFEncoder::EmitPackets(HostBufferRef* errorBuffer) {
-    if (encoder == nullptr || m_pCallback == nullptr) return errInvalidOperation;
+StatusCode AMFEncoder::StartOutputThread(HostBufferRef* errorBuffer) {
+    stopOutput = false;
+    outputFailed = false;
+    {
+        const std::lock_guard<std::mutex> lock(outputMutex);
+        pendingPackets.clear();
+        outputError.clear();
+        outputEof = false;
+    }
+    try {
+        outputThread = std::thread(&AMFEncoder::PollOutput, this);
+    } catch (const std::system_error& error) {
+        stopOutput = true;
+        return SetError(errorBuffer, errAlloc, "Could not start AMD AMF output thread: " + std::string(error.what()));
+    }
+    return errNone;
+}
 
-    bool emitted = false;
-    while (true) {
-        amf::AMFDataPtr data;
-        const AMF_RESULT result = encoder->QueryOutput(&data);
-        if (result == AMF_REPEAT || result == AMF_NEED_MORE_INPUT) return emitted ? errNone : errMoreData;
-        if (result == AMF_EOF) return errNone;
-        if (result != AMF_OK) {
-            return SetError(errorBuffer, errFail, "Could not read AMD AMF output: " + ResultText(result));
-        }
-        if (data == nullptr) return emitted ? errNone : errMoreData;
+void AMFEncoder::StopOutputThread() {
+    stopOutput = true;
+    surfaceAvailable.notify_all();
+    outputAvailable.notify_all();
+    if (outputThread.joinable()) outputThread.join();
+}
 
-        amf::AMFBufferPtr packet(data);
-        if (packet == nullptr || packet->GetNative() == nullptr || packet->GetSize() == 0) {
-            return SetError(errorBuffer, errFail, "AMD AMF returned an empty encoded packet.");
+void AMFEncoder::SetOutputError(const std::string& message) {
+    {
+        const std::lock_guard<std::mutex> lock(outputMutex);
+        if (outputError.empty()) outputError = message;
+    }
+    outputFailed = true;
+    surfaceAvailable.notify_all();
+    outputAvailable.notify_all();
+}
+
+std::string AMFEncoder::GetOutputError() const {
+    const std::lock_guard<std::mutex> lock(outputMutex);
+    return outputError.empty() ? "AMD AMF output thread failed." : outputError;
+}
+
+StatusCode AMFEncoder::QueueOutputPacket(amf::AMFData* data) {
+    amf::AMFBufferPtr packet(data);
+    if (packet == nullptr || packet->GetNative() == nullptr || packet->GetSize() == 0) {
+        SetOutputError("AMD AMF returned an empty encoded packet.");
+        return errFail;
+    }
+
+    const auto* packetBytes = static_cast<const uint8_t*>(packet->GetNative());
+    size_t packetSize = static_cast<size_t>(packet->GetSize());
+    const bool h264Idr = IsH264(descriptor) && H264SampleContainsIdr(packetBytes, packetSize);
+    std::vector<uint8_t> formattedPacket;
+    if (IsH264(descriptor)) {
+        std::string conversionError;
+        if (!ConvertH264SampleToLengthPrefixed(packetBytes, packetSize, formattedPacket, conversionError)) {
+            SetOutputError(conversionError);
+            return errFail;
         }
-        const auto* packetBytes = static_cast<const uint8_t*>(packet->GetNative());
-        size_t packetSize = static_cast<size_t>(packet->GetSize());
-        std::vector<uint8_t> formattedPacket;
-        if (IsHevc(descriptor)) {
-            std::string conversionError;
-            if (!ConvertHevcSampleToLengthPrefixed(packetBytes, packetSize, formattedPacket, conversionError)) {
-                return SetError(errorBuffer, errFail, conversionError);
+        packetBytes = formattedPacket.data();
+        packetSize = formattedPacket.size();
+    } else if (IsHevc(descriptor)) {
+        std::string conversionError;
+        if (!ConvertHevcSampleToLengthPrefixed(packetBytes, packetSize, formattedPacket, conversionError)) {
+            SetOutputError(conversionError);
+            return errFail;
+        }
+        packetBytes = formattedPacket.data();
+        packetSize = formattedPacket.size();
+    }
+
+    EncodedPacket queued;
+    queued.bytes.assign(packetBytes, packetBytes + packetSize);
+    queued.pts = data->GetPts();
+    amf::AMFVariant pictureType;
+    const wchar_t* pictureTypeProperty = IsAv1(descriptor)
+                                             ? AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE
+                                             : (IsHevc(descriptor) ? AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE
+                                                                   : AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE);
+    queued.keyFrame = data->GetProperty(pictureTypeProperty, &pictureType) == AMF_OK && pictureType.ToInt64() == 0;
+    if (h264Idr) queued.keyFrame = true;
+
+    {
+        const std::lock_guard<std::mutex> lock(outputMutex);
+        pendingPackets.push_back(std::move(queued));
+    }
+    outputAvailable.notify_one();
+    return errNone;
+}
+
+void AMFEncoder::PollOutput() {
+    try {
+        while (!stopOutput) {
+            amf::AMFDataPtr data;
+            const AMF_RESULT result = encoder->QueryOutput(&data);
+            if (stopOutput) return;
+            if (result == AMF_REPEAT || result == AMF_NEED_MORE_INPUT) continue;
+            if (result == AMF_EOF) {
+                {
+                    const std::lock_guard<std::mutex> lock(outputMutex);
+                    outputEof = true;
+                }
+                outputAvailable.notify_all();
+                return;
             }
-            packetBytes = formattedPacket.data();
-            packetSize = formattedPacket.size();
+            if (result != AMF_OK) {
+                SetOutputError("Could not read AMD AMF output: " + ResultText(result));
+                return;
+            }
+            if (data != nullptr && QueueOutputPacket(data) != errNone) return;
+        }
+    } catch (const std::exception& error) {
+        SetOutputError("AMD AMF output thread failed: " + std::string(error.what()));
+    } catch (...) {
+        SetOutputError("AMD AMF output thread failed unexpectedly.");
+    }
+}
+
+StatusCode AMFEncoder::EmitPendingPackets(HostBufferRef* errorBuffer) {
+    if (m_pCallback == nullptr) return errInvalidOperation;
+
+    while (true) {
+        EncodedPacket packet;
+        {
+            const std::lock_guard<std::mutex> lock(outputMutex);
+            if (pendingPackets.empty()) break;
+            packet = std::move(pendingPackets.front());
+            pendingPackets.pop_front();
         }
 
         HostBufferRef output(false);
-        if (!output.IsValid() || !output.Resize(packetSize)) return errAlloc;
+        if (!output.IsValid() || !output.Resize(packet.bytes.size())) {
+            return SetError(errorBuffer, errAlloc, "Could not allocate Resolve output packet.");
+        }
 
         char* outputData = nullptr;
         size_t outputSize = 0;
-        if (!output.LockBuffer(&outputData, &outputSize) || outputData == nullptr || outputSize < packetSize) return errAlloc;
-        std::memcpy(outputData, packetBytes, packetSize);
+        if (!output.LockBuffer(&outputData, &outputSize) || outputData == nullptr || outputSize < packet.bytes.size()) {
+            return SetError(errorBuffer, errAlloc, "Could not lock Resolve output packet.");
+        }
+        std::memcpy(outputData, packet.bytes.data(), packet.bytes.size());
         output.UnlockBuffer();
 
-        const int64_t pts = data->GetPts();
-        output.SetProperty(pIOPropPTS, propTypeInt64, &pts, 1);
-        output.SetProperty(pIOPropDTS, propTypeInt64, &pts, 1);
-        amf::AMFVariant pictureType;
-        const wchar_t* pictureTypeProperty = IsAv1(descriptor)
-                                                 ? AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE
-                                                 : (IsHevc(descriptor) ? AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE
-                                                                       : AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE);
-        const bool hasPictureType = data->GetProperty(pictureTypeProperty, &pictureType) == AMF_OK;
-        const uint8_t keyFrame = hasPictureType && pictureType.ToInt64() == 0 ? 1 : 0;
+        output.SetProperty(pIOPropPTS, propTypeInt64, &packet.pts, 1);
+        output.SetProperty(pIOPropDTS, propTypeInt64, &packet.pts, 1);
+        const uint8_t keyFrame = packet.keyFrame ? 1 : 0;
         output.SetProperty(pIOPropIsKeyFrame, propTypeUInt8, &keyFrame, 1);
 
         const StatusCode sent = m_pCallback->SendOutput(&output);
         if (sent != errNone) return sent;
-        emitted = true;
     }
+
+    if (outputFailed) return SetError(errorBuffer, errFail, GetOutputError());
+    return errNone;
+}
+
+StatusCode AMFEncoder::FinishDrain(HostBufferRef* errorBuffer) {
+    if (encoder == nullptr) return errInvalidOperation;
+    const auto deadline = std::chrono::steady_clock::now() + kDrainTimeout;
+
+    if (!drainRequested) {
+        AMF_RESULT result = encoder->Drain();
+        while (result == AMF_INPUT_FULL && std::chrono::steady_clock::now() < deadline) {
+            if (const StatusCode status = EmitPendingPackets(errorBuffer); status != errNone) return status;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            result = encoder->Drain();
+        }
+        if (result != AMF_OK && result != AMF_EOF) {
+            return SetError(errorBuffer, errFail, "Could not flush AMD AMF encoder: " + ResultText(result));
+        }
+        drainRequested = true;
+    }
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (const StatusCode status = EmitPendingPackets(errorBuffer); status != errNone) return status;
+        std::unique_lock<std::mutex> lock(outputMutex);
+        if (outputEof) {
+            lock.unlock();
+            return EmitPendingPackets(errorBuffer);
+        }
+        outputAvailable.wait_for(lock, std::chrono::milliseconds(10));
+    }
+    return SetError(errorBuffer, errFail, "Timed out while draining AMD AMF output.");
 }
 
 StatusCode AMFEncoder::DoProcess(HostBufferRef* buffer) {
     const std::lock_guard<std::mutex> lock(processMutex);
     if (encoder == nullptr) return errInvalidOperation;
-    if (drainRequested) return EmitPackets(buffer);
-
-    if (buffer == nullptr || !buffer->IsValid()) {
-        const AMF_RESULT result = encoder->Drain();
-        if (result != AMF_OK && result != AMF_EOF) {
-            return SetError(nullptr, errFail, "Could not flush AMD AMF encoder: " + ResultText(result));
-        }
-        drainRequested = true;
-        return EmitPackets(nullptr);
-    }
+    if (buffer == nullptr || !buffer->IsValid()) return FinishDrain(buffer);
+    if (drainRequested) return SetError(buffer, errInvalidOperation, "AMD AMF encoder is already draining.");
+    if (const StatusCode status = EmitPendingPackets(buffer); status != errNone) return status;
 
     amf::AMFSurfacePtr surface;
-    if (const StatusCode status = CopyInputFrame(buffer, surface); status != errNone) return status;
+    if (const StatusCode status = AcquireSurface(buffer, surface); status != errNone) return status;
+    if (const StatusCode status = CopyInputFrame(buffer, surface); status != errNone) {
+        surface.Release();
+        return status;
+    }
+
     AMF_RESULT result = encoder->SubmitInput(surface);
-    const auto submitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto submitDeadline = std::chrono::steady_clock::now() + kSurfaceWaitTimeout;
     while (result == AMF_INPUT_FULL && std::chrono::steady_clock::now() < submitDeadline) {
-        const StatusCode emitted = EmitPackets(buffer);
-        if (emitted != errNone && emitted != errMoreData) return emitted;
+        if (const StatusCode status = EmitPendingPackets(buffer); status != errNone) {
+            surface.Release();
+            return status;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         result = encoder->SubmitInput(surface);
     }
     if (result != AMF_OK) {
+        surface.Release();
         return SetError(buffer, errFail, "Could not submit frame to AMD AMF: " + ResultText(result));
     }
-    const StatusCode outputStatus = EmitPackets(buffer);
-    return outputStatus == errMoreData ? errNone : outputStatus;
+    return EmitPendingPackets(buffer);
 }
 
 void AMFEncoder::DoFlush() {
     const std::lock_guard<std::mutex> lock(processMutex);
-    if (encoder == nullptr || drainRequested) return;
-    const AMF_RESULT result = encoder->Drain();
-    if (result != AMF_OK && result != AMF_EOF) {
-        g_Log(logLevelError, "AMF encoder: flush failed: %s", ResultText(result).c_str());
-        return;
-    }
-    drainRequested = true;
-    EmitPackets(nullptr);
+    if (encoder == nullptr) return;
+    FinishDrain(nullptr);
 }
 
 }
