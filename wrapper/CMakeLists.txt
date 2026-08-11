@@ -1,15 +1,12 @@
-cmake_minimum_required(VERSION 3.20)
-project(host_plugin)
+add_library(host_plugin STATIC
+    host_api.cpp
+    host_api.h
+    plugin_api.cpp
+    plugin_api.h
+)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-set(BASE_DIR "${CMAKE_SOURCE_DIR}/../")
-
-if (NOT MSVC)
-    set(CMAKE_CXX_FLAGS "-fPIC -Wall -Wno-unused-variable -Wno-multichar")
-endif ()
-
-include_directories(${BASE_DIR}/include)
-
-add_library(${PROJECT_NAME} STATIC host_api.cpp host_api.h plugin_api.cpp plugin_api.h)
+target_compile_features(host_plugin PUBLIC cxx_std_20)
+target_include_directories(host_plugin PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+)

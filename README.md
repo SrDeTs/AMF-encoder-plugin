@@ -1,68 +1,90 @@
-# AMF Encoder Plugin Para DaVinci Resolve
+# AMF Encoder Plugin para DaVinci Resolve
 
-## AVISO: ISSO FOI FEITO POR MEIO DE VIBE CODING.
+Plugin de codificacao de video por hardware AMD para DaVinci Resolve no Linux.
+A implementacao usa a API oficial Codec Plugin da Blackmagic Design e acessa o
+AMD Advanced Media Framework (AMF) diretamente, sem usar FFmpeg como backend.
 
-Fork do projeto [`EdvinNilsson/ffmpeg_encoder_plugin`](https://github.com/EdvinNilsson/ffmpeg_encoder_plugin) focado em **AMF Video via FFmpeg**.
+Versao em ingles: [English.md](English.md)
 
-English version: [English.md](English.md)
+## Estado atual
 
-Estado atual do repositório:
-- só backend **AMF**
-- sem CPU
-- sem NVENC
-- sem fallback automático
+| Codec | Formato de entrada | Profundidade | Aceleracao |
+| --- | --- | --- | --- |
+| H.264/AVC | NV12 4:2:0 | 8-bit | AMD AMF |
+| AV1 | NV12 4:2:0 | 8-bit | AMD AMF |
+| AV1 | P010 4:2:0 | 10-bit | AMD AMF |
 
-Encoders expostos:
-- `h264_amf`
-- `av1_amf`
+HEVC/H.265 nao e registrado e nao aparece no Resolve.
 
-## Objetivo
+O plugin anuncia MP4, MOV e MKV ao Resolve. A disponibilidade final de cada
+combinacao ainda depende do muxer do Resolve. Por exemplo, o Resolve pode nao
+oferecer AV1 em MOV mesmo que o codec esteja instalado.
 
-Usar o backend AMF do FFmpeg como backend próprio dentro do DaVinci Resolve.
+Este e somente um plugin de video. Audio AAC, FLAC ou PCM e tratado pelo
+Resolve ou por outro plugin de audio.
 
-Se AMF falhar:
-- o plugin retorna erro claro
-- o encoder para
-- não troca para outro backend
+## Arquitetura
+
+O binario linka dinamicamente apenas o runtime AMF do sistema:
+
+```text
+libamfrt64.so.1
+```
+
+O contexto AMF e iniciado com `InitVulkan(nullptr)`, permitindo que o proprio
+runtime AMD crie o dispositivo Vulkan correto. O plugin nao cria um dispositivo
+Vulkan manualmente e nao linka diretamente `libvulkan`.
+
+O binario nao linka:
+
+- FFmpeg, `libavcodec`, `libavformat`, `libavutil` ou `libswscale`
+- x264 ou x265
+- NVENC ou CUDA
+- encoder por CPU ou fallback silencioso
+
+Os headers oficiais AMD AMF usados no build estao em `third_party/AMF`. A
+licenca MIT desses headers esta preservada em
+`third_party/AMF-MIT-LICENSE.txt`. Os arquivos de interface e wrapper do host
+seguem a estrutura do SDK Codec Plugin distribuido com o DaVinci Resolve.
+
+O projeto nao contem uma licenca GPL e nao incorpora FFmpeg. Este repositorio
+tambem nao concede automaticamente uma licenca geral para arquivos que estejam
+sujeitos aos termos do SDK da Blackmagic Design.
 
 ## Requisitos
 
-- Linux
-- DaVinci Resolve
-- FFmpeg com suporte a AMF
-- driver com suporte real ao codec desejado
-- AMF Video Encode para `h264_amf` e `av1_amf`
-- CMake
-- compilador C++
+- Linux x86-64
+- DaVinci Resolve com suporte a Codec Plugins
+- GPU AMD com suporte de hardware ao codec selecionado
+- driver AMD/Mesa funcional
+- runtime AMD AMF fornecendo `libamfrt64.so.1`
+- CMake 3.20 ou mais recente
+- compilador com C++20
 
-## Verificação do FFmpeg
+Os headers AMF ja estao no repositorio. Nao e necessario instalar headers AMF
+separados para compilar esta versao.
 
-Cheque se AMF existe:
+No CachyOS/Arch, use um pacote compativel com a distribuicao que forneca o
+runtime AMF. Nao use `amdgpu-install` feito para Ubuntu apenas para satisfazer
+esta dependencia.
+
+Confirme que o runtime esta visivel:
 
 ```bash
-ffmpeg -hide_banner -hwaccels | grep -i amf
+ldconfig -p | grep libamfrt64.so.1
 ```
 
-Cheque se os encoders existem:
+Resultado esperado inclui um caminho como:
 
-```bash
-ffmpeg -hide_banner -encoders | grep -i amf
+```text
+libamfrt64.so.1 => /usr/lib/libamfrt64.so.1
 ```
 
-Cheque as opções de cada encoder:
+## Compilacao
 
 ```bash
-ffmpeg -hide_banner -h encoder=h264_amf
-ffmpeg -hide_banner -h encoder=av1_amf
-```
-
-## Build
-
-```bash
-mkdir -p build
-cd build
-cmake ..
-make -j$(nproc)
+cmake -S . -B build
+cmake --build build -j"$(nproc)"
 ```
 
 Artefato principal:
@@ -71,102 +93,174 @@ Artefato principal:
 build/amf_encoder_plugin.dvcp
 ```
 
-Bundle Linux:
+O build tambem gera a estrutura:
 
 ```text
-build/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/
+build/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/amf_encoder_plugin.dvcp
 ```
 
-## Instalação
-
-Copie o plugin para o diretório de plugins do Resolve.
-
-Exemplo:
+Para confirmar que FFmpeg e Vulkan nao foram linkados diretamente:
 
 ```bash
-cp -av build/amf_encoder_plugin.dvcp \
-  /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/
+ldd build/amf_encoder_plugin.dvcp
 ```
 
-Se você estiver usando o bundle completo:
+## Instalacao
+
+Crie o bundle e instale o binario:
 
 ```bash
-cp -av build/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/* \
-  /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/
+sudo install -d /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64
+sudo install -m 755 build/amf_encoder_plugin.dvcp \
+  /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/amf_encoder_plugin.dvcp
 ```
 
-## Encoders disponíveis no Resolve
+Feche completamente o Resolve antes de substituir o plugin. Abra novamente
+depois da instalacao; o Resolve mantem bibliotecas `.dvcp` carregadas durante
+toda a execucao.
 
-Quando o plugin estiver carregado, o Resolve expõe:
+### Symlink para desenvolvimento
 
-- `H.264` -> `AMF 8-bit 4:2:0 (FFmpeg)`
-- `AV1` -> `AMF 8-bit 4:2:0 (FFmpeg)`, `AMF 10-bit 4:2:0 (FFmpeg)`
-
-## Opções AMF do plugin
-
-O plugin expõe opções de controle para o backend AMF, incluindo:
-
-- preset do encoder
-- modo de qualidade (`CQP`, `VBR`, `CBR`)
-- `Factor`
-- `Bit Rate`
-- `Max Bit Rate`
-- `Buffer Size`
-- `Async Depth`
-- `Usage`
-
-Observações:
-- `Async Depth` está limitado na UI a `1..42`
-- `Usage` muda por codec; o plugin usa os nomes do FFmpeg AMF
-
-## Teste manual no FFmpeg
-
-Antes de culpar o plugin, teste o encoder direto no FFmpeg.
-
-Exemplo H.264:
+Durante desenvolvimento, um link simbolico evita copiar o binario depois de
+cada build:
 
 ```bash
-ffmpeg -hide_banner \
-  -f lavfi -i testsrc2=size=1280x720:rate=30 \
-  -t 10 \
-  -vf "format=nv12" \
-  -c:v h264_amf \
-  -rc cqp \
-  -qp_i 20 \
-  -qp_p 20 \
-  -preset balanced \
-  -usage transcoding \
-  out.mp4
+sudo install -d /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64
+sudo ln -sfn "$PWD/build/amf_encoder_plugin.dvcp" \
+  /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/amf_encoder_plugin.dvcp
 ```
 
-Se isso falhar, o problema tende a estar em:
-- FFmpeg
-- driver
-- suporte real da GPU ao codec
+O symlink aponta sempre para o build atual, mas o Resolve ainda precisa ser
+reiniciado para carregar uma nova compilacao.
 
-## Limitações conhecidas
+### Remocao
 
-- suporte AMF Video ainda varia por driver e GPU
-- um sistema pode ter AMF disponível e mesmo assim não suportar encode para todos os codecs
-- `H.265/HEVC AMF` foi removido da oferta do Resolve neste plugin
-- `preset`, `usage` e `async_depth` podem ter limites diferentes por driver
-- presets agressivos podem causar instabilidade dependendo do stack AMF
+```bash
+sudo rm -rf /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle
+```
 
-## Sem fallback
+## Configuracoes expostas
 
-O comportamento esperado é:
+### Preset
 
-- selecionou AMF -> usa AMF
-- AMF falhou -> erro explícito
-- sem fallback silencioso
+H.264:
 
-## Créditos
+- High Quality
+- Quality
+- Balanced
+- Speed
 
-Crédito da base original:
+AV1:
 
-- **EdvinNilsson**
-- https://github.com/EdvinNilsson/ffmpeg_encoder_plugin
+- High Quality
+- Quality
+- Balanced
+- Speed
 
-## Licença
+### Controle de taxa
 
-Consulte [LICENSE](LICENSE).
+- Constant QP: usa QP no H.264 e Q Index no AV1
+- Variable Bitrate: usa bitrate alvo, bitrate maximo e tamanho do buffer
+- Constant Bitrate: usa bitrate alvo e tamanho do buffer
+
+Valores menores de QP/Q Index produzem maior qualidade e arquivos maiores.
+
+- H.264 QP: 0 a 51
+- AV1 Q Index: 1 a 255
+
+Bitrate e tamanho de buffer sao mostrados apenas quando aplicaveis ao modo de
+controle de taxa escolhido.
+
+### Usage
+
+- Transcoding
+- Low Latency
+- Ultra Low Latency
+- Webcam
+- High Quality
+- Low Latency High Quality
+
+Os valores sao enums nativos AMF. Algumas combinacoes podem depender da GPU,
+da versao do runtime e do driver.
+
+`Async Depth` nao e exposto. Essa opcao pertence a abstracao do encoder AMF no
+FFmpeg e nao equivale diretamente a `InputQueueSize` da API AMF. O runtime
+gerencia a fila interna; quando ela fica cheia, o plugin aplica backpressure,
+coleta os pacotes prontos e tenta novamente.
+
+## Comportamento no Linux
+
+O plugin define `DISABLE_LSFG=1` antes de inicializar AMF. Isso evita que a
+camada LSFG interna do runtime interfira na criacao do contexto Vulkan.
+
+O aviso abaixo vem do Mesa e nao indica falha de encode:
+
+```text
+radv: RADV_PERFTEST=video_decode is deprecated
+```
+
+## Diagnostico
+
+Log principal do Resolve:
+
+```text
+~/.local/share/DaVinciResolve/logs/ResolveDebug.txt
+```
+
+Filtre mensagens relevantes:
+
+```bash
+grep -E "AMF encoder|AMF result|Failed to Encode|Failed to add video track" \
+  ~/.local/share/DaVinciResolve/logs/ResolveDebug.txt
+```
+
+Confirme carregamento do plugin:
+
+```bash
+grep "amf_encoder_plugin" ~/.local/share/DaVinciResolve/logs/ResolveDebug.txt
+```
+
+Mensagens de cabecalho esperadas ao iniciar um render:
+
+```text
+AMF encoder: supplied Annex B codec header
+AMF encoder: supplied av1C codec header
+```
+
+### Encoder nao aparece
+
+1. Confirme o caminho e permissao do `.dvcp`.
+2. Confirme `libamfrt64.so.1` com `ldconfig` e `ldd`.
+3. Reinicie completamente o Resolve.
+4. Verifique `ResolveDebug.txt` por falha de carregamento do plugin.
+
+### AMF result 5
+
+`AMF_OUT_OF_RANGE`: alguma propriedade foi rejeitada pelo runtime. A versao
+atual nao envia mais o antigo valor de Async Depth para `InputQueueSize`. Se o
+erro ocorrer com outro controle, preserve o trecho completo do log.
+
+### AMF result 25
+
+`AMF_INPUT_FULL`: a fila interna do encoder esta cheia. A versao atual trata
+esse retorno como backpressure e nao como falha imediata. Se ainda ocorrer,
+confirme que o Resolve foi reiniciado e carregou o build atual.
+
+### Cannot add video track to clip
+
+Normalmente indica FourCC ou magic cookie invalido para o muxer. O plugin usa
+`avc1` para H.264, `av01` para AV1, cabecalho Annex B para H.264 e registro
+`av1C` para AV1.
+
+## Limitacoes
+
+- Nao existe fallback por CPU.
+- HEVC/H.265 nao esta disponivel.
+- H.264 10-bit nao esta disponivel.
+- Suporte real a AV1 e P010 depende do hardware e runtime AMD.
+- O plugin codifica video; ele nao controla bugs de audio ou do muxer do
+  Resolve.
+- O plugin e dinamico. Mesmo que o codigo do plugin seja linkado de forma mais
+  fechada, `libamfrt64.so.1` continua sendo uma dependencia de runtime.
+- O teste `ffmpeg -c:v h264_amf` pode ajudar a validar a instalacao AMF do
+  sistema, mas FFmpeg nao e dependencia nem backend deste plugin.

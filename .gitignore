@@ -1,62 +1,17 @@
-# Prerequisites
+build/
+build-*/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
 *.d
-
-# Compiled Object files
-*.slo
-*.lo
 *.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
 *.so
+*.a
 *.dylib
 *.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Builds
-build
-build/
-
-# CMake
-cmake-build-*/
-
-CMakeLists.txt.user
-CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Testing
-Makefile
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-_deps
-CMakeUserPresets.json
-PushParaGitHub.sh
-
-# IDE files
-.idea
-.vs
-.vscode
-
-## FFmpeg
-ffmpeg
-ffmpeg_sources
+*.dvcp
+.idea/
+.vscode/
+/third_party

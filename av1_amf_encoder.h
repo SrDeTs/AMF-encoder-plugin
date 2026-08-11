@@ -1,14 +1,14 @@
 #pragma once
 
-#include "ffmpeg_encoder.h"
+#include "amf_encoder.h"
 
 namespace IOPlugin {
 
-class Av1AMFEncoder final : public FFmpegEncoder {
+class Av1AMFEncoder final : public AMFEncoder {
    public:
-    static const EncoderInfo encoderInfo;
+    static const EncoderDescriptor descriptor;
 
-    explicit Av1AMFEncoder(int formatIndex);
+    explicit Av1AMFEncoder(uint32_t formatIndex);
 
     static StatusCode RegisterCodecs(HostListRef* list);
     static StatusCode GetEncoderSettings(HostPropertyCollectionRef* values, HostListRef* settingsList);

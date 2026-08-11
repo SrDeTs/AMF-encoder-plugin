@@ -1,45 +1,49 @@
 #include "av1_amf_encoder.h"
 
-const EncoderInfo Av1AMFEncoder::encoderInfo = {
-    .UUID{0x03, 0xe3, 0x29, 0x7a, 0x03, 0x93, 0x46, 0xf9, 0xad, 0x7d, 0x22, 0xdd, 0xe1, 0x60, 0x95, 0xa8},
-    .codecGroup = "AV1",
-    .fourCC = 'av01',
-    .encoder = "av1_amf",
-    .hwAcceleration = AMF,
-    .qualityModes = CQP | VBR | CBR,
-    .qp = {1, 25, 63},
-    .presets = {{0, "High Quality"}, {1, "Quality"}, {2, "Balanced"}, {3, "Speed"}},
+namespace IOPlugin {
+
+const EncoderDescriptor Av1AMFEncoder::descriptor = {
+    .uuid = {0x03, 0xe3, 0x29, 0x7a, 0x03, 0x93, 0x46, 0xf9, 0xad, 0x7d, 0x22, 0xdd, 0xe1, 0x60, 0x95, 0xa8},
+    .group = "AV1",
+    .fourCC = MakeFourCC('a', 'v', '0', '1'),
+    .amfComponent = AMFVideoEncoder_AV1,
+    .settingsId = "av1",
+    .rateControls = static_cast<int32_t>(RateControl::CQP) | static_cast<int32_t>(RateControl::VBR) |
+                    static_cast<int32_t>(RateControl::CBR),
+    .qualityMin = 1,
+    .qualityDefault = 100,
+    .qualityMax = 255,
     .defaultPreset = 1,
+    .presets = {{0, "High Quality"}, {1, "Quality"}, {2, "Balanced"}, {3, "Speed"}},
     .formats =
         {
             {
-                .codecName = "AMF 8-bit 4:2:0 (FFmpeg)",
+                .name = "AMF 8-bit 4:2:0",
                 .bitDepth = 8,
                 .colorModel = clrNV12,
                 .hSubsampling = 2,
                 .vSubsampling = 2,
-                .pixelFormat = AV_PIX_FMT_NV12,
+                .surfaceFormat = amf::AMF_SURFACE_NV12,
             },
             {
-                .codecName = "AMF 10-bit 4:2:0 (FFmpeg)",
+                .name = "AMF 10-bit 4:2:0",
                 .bitDepth = 10,
                 .colorModel = clrNV12,
                 .hSubsampling = 2,
                 .vSubsampling = 2,
-                .pixelFormat = AV_PIX_FMT_P010,
+                .surfaceFormat = amf::AMF_SURFACE_P010,
             },
         },
 };
 
-Av1AMFEncoder::Av1AMFEncoder(const int formatIndex) {
-    FFmpegEncoder::encoderInfo = encoderInfo;
-    FFmpegEncoder::formatIndex = formatIndex;
-}
+Av1AMFEncoder::Av1AMFEncoder(const uint32_t formatIndex) : AMFEncoder(descriptor, formatIndex) {}
 
 StatusCode Av1AMFEncoder::RegisterCodecs(HostListRef* list) {
-    return FFmpegEncoder::RegisterCodecs(list, encoderInfo);
+    return AMFEncoder::RegisterCodecs(list, descriptor);
 }
 
 StatusCode Av1AMFEncoder::GetEncoderSettings(HostPropertyCollectionRef* values, HostListRef* settingsList) {
-    return FFmpegEncoder::GetEncoderSettings(values, settingsList, encoderInfo);
+    return AMFEncoder::GetEncoderSettings(values, settingsList, descriptor);
+}
+
 }
