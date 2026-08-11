@@ -16,12 +16,6 @@ Versao em ingles: [English.md](English.md)
 | AV1 AMF 8-bit 4:2:0 | NV12 para NV12 | MP4, MOV, MKV |
 | AV1 AMF 10-bit 4:2:0 | entrada 10-bit para P010 | MP4, MOV, MKV |
 
-A lista acima e anunciada pelo plugin. A exibicao final de cada combinacao
-depende do muxer do Resolve; por exemplo, o Resolve pode ocultar AV1 em MOV.
-HEVC em MKV permanece desativado porque esse caminho ainda nao foi validado.
-
-HEVC Main 8-bit e Main 10 foram validados com MP4 e MOV.
-
 Este e somente um plugin de video. Audio AAC, FLAC ou PCM e tratado pelo
 Resolve ou por outro plugin de audio.
 
@@ -99,41 +93,6 @@ sudo install -m 755 build/amf_encoder_plugin.dvcp \
 sudo rm -rf /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle
 ```
 
-## Configuracoes expostas
-
-### Preset
-
-Todos os codecs oferecem High Quality, Quality, Balanced e Speed. O padrao e
-Balanced para H.264/HEVC e Quality para AV1.
-
-### Controle de taxa
-
-- Constant QP: usa QP no H.264/HEVC e Q Index no AV1
-- Variable Bitrate: usa bitrate alvo, bitrate maximo e tamanho do buffer
-- Constant Bitrate: usa bitrate alvo e tamanho do buffer
-
-O padrao e Constant QP: 20 no H.264, 22 no HEVC e 100 no AV1. Valores menores
-produzem maior qualidade e arquivos maiores.
-
-- H.264/HEVC QP: 0 a 51
-- AV1 Q Index: 1 a 255
-- bitrate alvo e maximo: 100 a 100000 kb/s; padrao 6000 kb/s
-- buffer: 100 a 200000 kbit; padrao 12000 kbit
-
-Bitrate e tamanho de buffer sao mostrados apenas quando aplicaveis ao modo de
-controle de taxa escolhido.
-
-### Usage e reset
-
-H.264/HEVC seguem a ordem nativa: Transcoding, Ultra Low Latency, Low Latency,
-Webcam, High Quality e Low Latency High Quality. AV1 troca a ordem de Low
-Latency e Ultra Low Latency. O padrao e Transcoding.
-
-Os valores sao enums nativos AMF. Algumas combinacoes podem depender da GPU,
-da versao do runtime e do driver. O botao Reset restaura todos os padroes. O
-plugin nao expoe Async Depth; o fluxo de envio e drenagem e gerenciado
-internamente.
-
 ## Comportamento no Linux
 
 O plugin define `DISABLE_LSFG=1` antes de inicializar AMF. Isso evita que a
@@ -161,13 +120,3 @@ radv: RADV_PERFTEST=video_decode is deprecated
 - Suporte real a HEVC, AV1 e P010 depende do hardware e runtime AMD.
 - O plugin codifica video; ele nao controla bugs de audio ou do muxer do
   Resolve.
-
-## Contribuicao
-
-Antes de alterar o codigo, consulte [AGENTS.md](AGENTS.md). O guia descreve a
-estrutura dos modulos, comandos de build e teste, convencoes de codigo e os
-criterios de validacao no DaVinci Resolve.
-
-Mudancas de codec, formato de pixel ou container devem incluir testes locais e
-um render real no Resolve. O projeto usa AMF diretamente; nao adicione FFmpeg
-como dependencia nem incorpore codigo GPL.
