@@ -28,9 +28,7 @@ Resolve ou por outro plugin de audio.
 O plugin usa AMD AMF diretamente. No Linux, o proprio runtime cria o contexto
 grafico necessario para acessar o encoder da GPU.
 
-O binario nao linka:
-
-- FFmpeg.
+O plugin nao usa nem linka FFmpeg.
 
 O projeto nao contem uma licenca GPL e nao incorpora FFmpeg. Este repositorio
 tambem nao concede automaticamente uma licenca geral para arquivos que estejam
