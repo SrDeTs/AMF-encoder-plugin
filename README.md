@@ -8,28 +8,28 @@ Versao em ingles: [English.md](English.md)
 
 ## Estado atual
 
-| Codec | Formato de entrada | Profundidade | Aceleracao |
-| --- | --- | --- | --- |
-| H.264/AVC | NV12 4:2:0 | 8-bit | AMD AMF |
-| HEVC/H.265 Main | UYVY 4:2:2 | 8-bit | AMD AMF |
-| HEVC/H.265 Main 10 | RGB16 convertido para P010 4:2:0 | 10-bit | AMD AMF |
-| AV1 | NV12 4:2:0 | 8-bit | AMD AMF |
-| AV1 | P010 4:2:0 | 10-bit | AMD AMF |
+| Codec no Resolve | Caminho de pixels | Containers anunciados |
+| --- | --- | --- |
+| H.264 AMF 8-bit 4:2:0 | NV12 para NV12 | MP4, MOV, MKV |
+| H.265 AMF 8-bit 4:2:0 | UYVY 4:2:2 para NV12 4:2:0 | MP4, MOV |
+| H.265 AMF 10-bit 4:2:0 | RGB16 ou YUV 10-bit para P010 | MP4, MOV |
+| AV1 AMF 8-bit 4:2:0 | NV12 para NV12 | MP4, MOV, MKV |
+| AV1 AMF 10-bit 4:2:0 | entrada 10-bit para P010 | MP4, MOV, MKV |
 
-H.264 e AV1 anunciam MP4, MOV e MKV. HEVC anuncia somente MP4. MOV e MKV ficam
-ocultos para HEVC ate o caminho de muxing ser validado. A disponibilidade final
-das outras combinacoes ainda depende do muxer do Resolve. Por exemplo, o
-Resolve pode nao oferecer AV1 em MOV mesmo que o codec esteja instalado.
+A lista acima e anunciada pelo plugin. A exibicao final de cada combinacao
+depende do muxer do Resolve; por exemplo, o Resolve pode ocultar AV1 em MOV.
+HEVC em MKV permanece desativado porque esse caminho ainda nao foi validado.
 
-HEVC Main 8-bit e Main 10 foram validados com MP4.
+HEVC Main 8-bit e Main 10 foram validados com MP4 e MOV.
 
 Este e somente um plugin de video. Audio AAC, FLAC ou PCM e tratado pelo
 Resolve ou por outro plugin de audio.
 
 ## Arquitetura
 
-O plugin usa AMD AMF diretamente. No Linux, o proprio runtime cria o contexto
-grafico necessario para acessar o encoder da GPU.
+O plugin usa AMD AMF diretamente. Ele inicializa um contexto AMF Vulkan e envia
+surfaces NV12 ou P010 ao encoder da GPU. No HEVC, o plugin tambem gera o registro
+`hvcC` e converte os pacotes para o formato esperado pelos muxers MP4/QuickTime.
 
 O plugin nao usa nem linka FFmpeg.
 
@@ -44,6 +44,7 @@ sujeitos aos termos do SDK da Blackmagic Design.
 - GPU AMD com suporte de hardware ao codec selecionado
 - driver AMD/Mesa funcional
 - runtime AMD AMF fornecendo `libamfrt64.so.1`
+- headers AMF incluidos em `third_party/AMF`
 - CMake 3.20 ou mais recente
 - compilador com C++20
 
@@ -102,19 +103,8 @@ sudo rm -rf /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle
 
 ### Preset
 
-H.264 e HEVC:
-
-- High Quality
-- Quality
-- Balanced
-- Speed
-
-AV1:
-
-- High Quality
-- Quality
-- Balanced
-- Speed
+Todos os codecs oferecem High Quality, Quality, Balanced e Speed. O padrao e
+Balanced para H.264/HEVC e Quality para AV1.
 
 ### Controle de taxa
 
@@ -122,25 +112,27 @@ AV1:
 - Variable Bitrate: usa bitrate alvo, bitrate maximo e tamanho do buffer
 - Constant Bitrate: usa bitrate alvo e tamanho do buffer
 
-Valores menores de QP/Q Index produzem maior qualidade e arquivos maiores.
+O padrao e Constant QP: 20 no H.264, 22 no HEVC e 100 no AV1. Valores menores
+produzem maior qualidade e arquivos maiores.
 
 - H.264/HEVC QP: 0 a 51
 - AV1 Q Index: 1 a 255
+- bitrate alvo e maximo: 100 a 100000 kb/s; padrao 6000 kb/s
+- buffer: 100 a 200000 kbit; padrao 12000 kbit
 
 Bitrate e tamanho de buffer sao mostrados apenas quando aplicaveis ao modo de
 controle de taxa escolhido.
 
-### Usage
+### Usage e reset
 
-- Transcoding
-- Low Latency
-- Ultra Low Latency
-- Webcam
-- High Quality
-- Low Latency High Quality
+H.264/HEVC seguem a ordem nativa: Transcoding, Ultra Low Latency, Low Latency,
+Webcam, High Quality e Low Latency High Quality. AV1 troca a ordem de Low
+Latency e Ultra Low Latency. O padrao e Transcoding.
 
 Os valores sao enums nativos AMF. Algumas combinacoes podem depender da GPU,
-da versao do runtime e do driver.
+da versao do runtime e do driver. O botao Reset restaura todos os padroes. O
+plugin nao expoe Async Depth; o fluxo de envio e drenagem e gerenciado
+internamente.
 
 ## Comportamento no Linux
 
@@ -163,9 +155,19 @@ radv: RADV_PERFTEST=video_decode is deprecated
 ## Limitacoes
 
 - Nao existe fallback por CPU.
-- HEVC/H.265 aparece somente com container MP4.
-- HEVC/H.265 em MOV e MKV nao esta disponivel.
+- HEVC/H.265 aparece com os containers MP4 e MOV.
+- HEVC/H.265 em MKV nao esta disponivel.
 - H.264 10-bit nao esta disponivel.
 - Suporte real a HEVC, AV1 e P010 depende do hardware e runtime AMD.
 - O plugin codifica video; ele nao controla bugs de audio ou do muxer do
   Resolve.
+
+## Contribuicao
+
+Antes de alterar o codigo, consulte [AGENTS.md](AGENTS.md). O guia descreve a
+estrutura dos modulos, comandos de build e teste, convencoes de codigo e os
+criterios de validacao no DaVinci Resolve.
+
+Mudancas de codec, formato de pixel ou container devem incluir testes locais e
+um render real no Resolve. O projeto usa AMF diretamente; nao adicione FFmpeg
+como dependencia nem incorpore codigo GPL.
