@@ -6,6 +6,8 @@
 #include <thread>
 #include <vector>
 
+#include "hevc_config.h"
+
 extern "C" AMF_RESULT AMF_CDECL_CALL AMFInit(amf_uint64 version, amf::AMFFactory** factory);
 
 namespace IOPlugin {
@@ -18,6 +20,69 @@ std::string ResultText(const AMF_RESULT result) {
 
 bool IsAv1(const EncoderDescriptor& descriptor) {
     return descriptor.fourCC == MakeFourCC('a', 'v', '0', '1');
+}
+
+bool IsHevc(const EncoderDescriptor& descriptor) {
+    return descriptor.fourCC == MakeFourCC('h', 'v', 'c', '1');
+}
+
+struct Rgb16 {
+    int32_t r;
+    int32_t g;
+    int32_t b;
+};
+
+Rgb16 ReadRgb16(const uint8_t* pixel, const bool fullRange) {
+    Rgb16 value{};
+    uint16_t components[3]{};
+    std::memcpy(components, pixel, sizeof(components));
+    value.r = components[0];
+    value.g = components[1];
+    value.b = components[2];
+    if (!fullRange) {
+        constexpr int32_t videoMinimum = 64 << 6;
+        constexpr int32_t videoMaximum = 940 << 6;
+        constexpr int32_t videoSpan = videoMaximum - videoMinimum;
+        const auto normalize = [=](const int32_t component) {
+            const int32_t clamped = std::clamp(component, videoMinimum, videoMaximum) - videoMinimum;
+            return static_cast<int32_t>((int64_t(clamped) * 65535 + videoSpan / 2) / videoSpan);
+        };
+        value.r = normalize(value.r);
+        value.g = normalize(value.g);
+        value.b = normalize(value.b);
+    }
+    return value;
+}
+
+int32_t RgbToLuma16(const Rgb16& rgb) {
+    return static_cast<int32_t>((int64_t(13933) * rgb.r + int64_t(46871) * rgb.g + int64_t(4732) * rgb.b +
+                                 32768) >>
+                                16);
+}
+
+int32_t ScaleSigned(const int32_t value, const int32_t scale) {
+    const int64_t product = int64_t(value) * scale;
+    return product >= 0 ? static_cast<int32_t>((product + 32768) >> 16)
+                        : -static_cast<int32_t>((-product + 32768) >> 16);
+}
+
+uint16_t RgbToP010Luma(const Rgb16& rgb, const bool fullRange) {
+    const int32_t luma16 = RgbToLuma16(rgb);
+    const int32_t code = fullRange ? static_cast<int32_t>((int64_t(luma16) * 1023 + 32767) / 65535)
+                                   : 64 + static_cast<int32_t>((int64_t(luma16) * 876 + 32767) / 65535);
+    return static_cast<uint16_t>(std::clamp(code, 0, 1023) << 6);
+}
+
+void RgbToP010Chroma(const Rgb16& rgb, const bool fullRange, uint16_t& u, uint16_t& v) {
+    const int32_t luma16 = RgbToLuma16(rgb);
+    const int32_t uScale = fullRange ? 551 : 483;
+    const int32_t vScale = fullRange ? 650 : 569;
+    const int32_t minimum = fullRange ? 0 : 64;
+    const int32_t maximum = fullRange ? 1023 : 960;
+    const int32_t uCode = std::clamp(512 + ScaleSigned(rgb.b - luma16, uScale), minimum, maximum);
+    const int32_t vCode = std::clamp(512 + ScaleSigned(rgb.r - luma16, vScale), minimum, maximum);
+    u = static_cast<uint16_t>(uCode << 6);
+    v = static_cast<uint16_t>(vCode << 6);
 }
 
 }  // namespace
@@ -50,15 +115,37 @@ void AMFEncoder::ReleaseResources() {
     }
     factory = nullptr;
     drainRequested = false;
+    inputLayoutLogged = false;
+    inputAlignmentKnown = false;
+    shift10BitSamples = false;
 }
 
 StatusCode AMFEncoder::DoInit(HostPropertyCollectionRef* properties) {
-    if (properties == nullptr || descriptor.formats.empty()) return errNone;
+    if (properties == nullptr || descriptor.formats.empty() || formatIndex >= descriptor.formats.size()) return errNone;
 
-    const EncoderFormat& format = descriptor.formats.front();
-    properties->SetProperty(pIOPropColorModel, propTypeUInt32, &format.colorModel, 1);
-    properties->SetProperty(pIOPropHSubsampling, propTypeUInt8, &format.hSubsampling, 1);
-    properties->SetProperty(pIOPropVSubsampling, propTypeUInt8, &format.vSubsampling, 1);
+    const EncoderFormat& format = descriptor.formats[formatIndex];
+    const uint32_t bitDepth = static_cast<uint32_t>(format.bitDepth);
+    const uint32_t sampleBits = format.sampleBits != 0 ? format.sampleBits : static_cast<uint32_t>(format.bitDepth);
+    g_Log(logLevelInfo, "AMF encoder: init %s, color model %u, bit depth %u, sample bits %u", format.name,
+          format.colorModel, bitDepth, sampleBits);
+    if (!format.configureInputOnInit) return errNone;
+
+    if (const StatusCode status = properties->SetProperty(pIOPropColorModel, propTypeUInt32, &format.colorModel, 1);
+        status != errNone) {
+        return status;
+    }
+    if (format.advertiseSubsampling) {
+        if (const StatusCode status =
+                properties->SetProperty(pIOPropHSubsampling, propTypeUInt8, &format.hSubsampling, 1);
+            status != errNone) {
+            return status;
+        }
+        if (const StatusCode status =
+                properties->SetProperty(pIOPropVSubsampling, propTypeUInt8, &format.vSubsampling, 1);
+            status != errNone) {
+            return status;
+        }
+    }
     return errNone;
 }
 
@@ -78,9 +165,15 @@ StatusCode AMFEncoder::RegisterCodecs(HostListRef* list, const EncoderDescriptor
         const uint8_t hardwareAcceleration = 1;
         const uint8_t dataRange[] = {0, 1};
         const uint32_t temporalReordering = 0;
+        const uint32_t bitDepth = static_cast<uint32_t>(format.bitDepth);
+        const uint32_t sampleBits = format.sampleBits != 0 ? format.sampleBits : static_cast<uint32_t>(format.bitDepth);
         const uint8_t fields = fieldProgressive | fieldTop | fieldBottom;
         const uint8_t threadSafe = 0;
-        const char containerList[] = "mp4\0mov\0mkv";
+        std::string containerList;
+        for (size_t containerIndex = 0; containerIndex < descriptor.containers.size(); ++containerIndex) {
+            containerList.append(descriptor.containers[containerIndex]);
+            if (containerIndex + 1 < descriptor.containers.size()) containerList.push_back('\0');
+        }
 
         codecInfo.SetProperty(pIOPropUUID, propTypeUInt8, uuid.data(), static_cast<int>(uuid.size()));
         codecInfo.SetProperty(pIOPropGroup, propTypeString, descriptor.group, static_cast<int>(std::strlen(descriptor.group)));
@@ -89,16 +182,19 @@ StatusCode AMFEncoder::RegisterCodecs(HostListRef* list, const EncoderDescriptor
         codecInfo.SetProperty(pIOPropMediaType, propTypeUInt32, &mediaType, 1);
         codecInfo.SetProperty(pIOPropCodecDirection, propTypeUInt32, &direction, 1);
         codecInfo.SetProperty(pIOPropColorModel, propTypeUInt32, &format.colorModel, 1);
-        codecInfo.SetProperty(pIOPropHSubsampling, propTypeUInt8, &format.hSubsampling, 1);
-        codecInfo.SetProperty(pIOPropVSubsampling, propTypeUInt8, &format.vSubsampling, 1);
+        if (format.advertiseSubsampling) {
+            codecInfo.SetProperty(pIOPropHSubsampling, propTypeUInt8, &format.hSubsampling, 1);
+            codecInfo.SetProperty(pIOPropVSubsampling, propTypeUInt8, &format.vSubsampling, 1);
+        }
         codecInfo.SetProperty(pIOPropDataRange, propTypeUInt8, dataRange, 2);
-        codecInfo.SetProperty(pIOPropBitDepth, propTypeUInt32, &format.bitDepth, 1);
-        codecInfo.SetProperty(pIOPropBitsPerSample, propTypeUInt32, &format.bitDepth, 1);
+        codecInfo.SetProperty(pIOPropBitDepth, propTypeUInt32, &bitDepth, 1);
+        codecInfo.SetProperty(pIOPropBitsPerSample, propTypeUInt32, &sampleBits, 1);
         codecInfo.SetProperty(pIOPropTemporalReordering, propTypeUInt32, &temporalReordering, 1);
         codecInfo.SetProperty(pIOPropFieldOrder, propTypeUInt8, &fields, 1);
         codecInfo.SetProperty(pIOPropThreadSafe, propTypeUInt8, &threadSafe, 1);
         codecInfo.SetProperty(pIOPropHWAcc, propTypeUInt8, &hardwareAcceleration, 1);
-        codecInfo.SetProperty(pIOPropContainerList, propTypeString, containerList, sizeof(containerList) - 1);
+        codecInfo.SetProperty(pIOPropContainerList, propTypeString, containerList.data(),
+                              static_cast<int>(containerList.size()));
 
         if (!list->Append(&codecInfo)) return errFail;
     }
@@ -113,11 +209,12 @@ StatusCode AMFEncoder::GetEncoderSettings(HostPropertyCollectionRef* values, Hos
     return settings.AppendTo(settingsList);
 }
 
- StatusCode AMFEncoder::ConfigureEncoder(HostBufferRef* buffer, const uint32_t frameRateNum, const uint32_t frameRateDen) {
+StatusCode AMFEncoder::ConfigureEncoder(HostBufferRef* buffer, const uint32_t frameRateNum, const uint32_t frameRateDen) {
     if (encoder == nullptr || settings == nullptr) return errInvalidOperation;
 
     const EncoderFormat& format = descriptor.formats[formatIndex];
     const bool av1 = IsAv1(descriptor);
+    const bool hevc = IsHevc(descriptor);
     const AMFSize frameSize = AMFConstructSize(width, height);
     const AMFRate frameRate = AMFConstructRate(frameRateNum, frameRateDen);
     const amf_int64 quality = settings->GetQualityFactor();
@@ -158,6 +255,43 @@ StatusCode AMFEncoder::GetEncoderSettings(HostPropertyCollectionRef* values, Hos
             if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, peakBitrate);
             if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, bufferSize);
         }
+    } else if (hevc) {
+        const amf_int64 presetValues[] = {AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_QUALITY,
+                                           AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED,
+                                           AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED,
+                                           AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_HIGH_QUALITY};
+        const int32_t preset = std::clamp(settings->GetPreset(), 0, 3);
+        const amf_int64 profile = format.bitDepth > 8 ? AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN_10
+                                                       : AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN;
+        result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_USAGE, amf_int64(settings->GetUsage()));
+        if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT, amf_int64(10));
+        if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_FRAMESIZE, frameSize);
+        if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_PROFILE, profile);
+        if (result == AMF_OK) {
+            result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_COLOR_BIT_DEPTH, amf_int64(format.bitDepth));
+        }
+        if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET, presetValues[preset]);
+        if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_FRAMERATE, frameRate);
+        if (result == AMF_OK) {
+            result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE,
+                                          amf_int64(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE_SUPPRESSED));
+        }
+        if (settings->GetRateControl() == RateControl::CQP) {
+            if (result == AMF_OK) {
+                result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD,
+                                              amf_int64(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CONSTANT_QP));
+            }
+            if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_QP_I, quality);
+            if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_QP_P, quality);
+        } else {
+            const amf_int64 mode = settings->GetRateControl() == RateControl::CBR
+                                       ? AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR
+                                       : AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR;
+            if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD, mode);
+            if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, targetBitrate);
+            if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, peakBitrate);
+            if (result == AMF_OK) result = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, bufferSize);
+        }
     } else {
         const amf_int64 presetValues[] = {AMF_VIDEO_ENCODER_QUALITY_PRESET_QUALITY,
                                            AMF_VIDEO_ENCODER_QUALITY_PRESET_BALANCED,
@@ -195,16 +329,22 @@ StatusCode AMFEncoder::GetEncoderSettings(HostPropertyCollectionRef* values, Hos
 
 StatusCode AMFEncoder::SetMagicCookie(HostBufferRef* buffer) {
     const bool av1 = IsAv1(descriptor);
-    const wchar_t* property = av1 ? AMF_VIDEO_ENCODER_AV1_EXTRA_DATA : AMF_VIDEO_ENCODER_EXTRADATA;
+    const bool hevc = IsHevc(descriptor);
+    const wchar_t* property = av1 ? AMF_VIDEO_ENCODER_AV1_EXTRA_DATA
+                                  : (hevc ? AMF_VIDEO_ENCODER_HEVC_EXTRADATA : AMF_VIDEO_ENCODER_EXTRADATA);
     amf::AMFVariant value;
     const AMF_RESULT result = encoder->GetProperty(property, &value);
     if (result != AMF_OK) {
+        if (hevc) {
+            return SetError(buffer, errFail, "Could not read HEVC codec header: " + ResultText(result));
+        }
         g_Log(logLevelWarn, "AMF encoder: no codec header (%s)", ResultText(result).c_str());
         return errNone;
     }
 
     amf::AMFBufferPtr extraData(static_cast<amf::AMFInterface*>(value));
     if (extraData == nullptr || extraData->GetNative() == nullptr || extraData->GetSize() == 0) {
+        if (hevc) return SetError(buffer, errFail, "AMD AMF returned an empty HEVC codec header.");
         g_Log(logLevelWarn, "AMF encoder: codec header is empty");
         return errNone;
     }
@@ -214,14 +354,14 @@ StatusCode AMFEncoder::SetMagicCookie(HostBufferRef* buffer) {
     const uint8_t* cookieBytes = extraBytes;
     size_t cookieSize = extraSize;
     uint32_t cookieType = 0;
-    std::vector<uint8_t> av1Cookie;
+    std::vector<uint8_t> formattedCookie;
 
     if (av1) {
         cookieType = MakeFourCC('a', 'v', '1', 'C');
 
         // AMF exposes the raw sequence-header OBU. Resolve's muxers expect av1C.
         if (extraSize >= 4 && extraBytes[0] == 0x81) {
-            av1Cookie.assign(extraBytes, extraBytes + extraSize);
+            formattedCookie.assign(extraBytes, extraBytes + extraSize);
         } else {
             amf_int64 level = AMF_VIDEO_ENCODER_AV1_LEVEL_4_0;
             amf::AMFVariant levelValue;
@@ -230,15 +370,23 @@ StatusCode AMFEncoder::SetMagicCookie(HostBufferRef* buffer) {
             }
 
             const bool highBitDepth = descriptor.formats[formatIndex].bitDepth > 8;
-            av1Cookie.reserve(extraSize + 4);
-            av1Cookie.push_back(0x81);  // marker = 1, version = 1
-            av1Cookie.push_back(static_cast<uint8_t>(level));  // Main profile, level from AMF
-            av1Cookie.push_back(static_cast<uint8_t>((highBitDepth ? 0x40 : 0x00) | 0x0c));
-            av1Cookie.push_back(0x00);  // no initial presentation delay
-            av1Cookie.insert(av1Cookie.end(), extraBytes, extraBytes + extraSize);
+            formattedCookie.reserve(extraSize + 4);
+            formattedCookie.push_back(0x81);  // marker = 1, version = 1
+            formattedCookie.push_back(static_cast<uint8_t>(level));  // Main profile, level from AMF
+            formattedCookie.push_back(static_cast<uint8_t>((highBitDepth ? 0x40 : 0x00) | 0x0c));
+            formattedCookie.push_back(0x00);  // no initial presentation delay
+            formattedCookie.insert(formattedCookie.end(), extraBytes, extraBytes + extraSize);
         }
-        cookieBytes = av1Cookie.data();
-        cookieSize = av1Cookie.size();
+        cookieBytes = formattedCookie.data();
+        cookieSize = formattedCookie.size();
+    } else if (hevc) {
+        std::string conversionError;
+        if (!BuildHevcDecoderConfigurationRecord(extraBytes, extraSize, formattedCookie, conversionError)) {
+            return SetError(buffer, errFail, conversionError);
+        }
+        cookieType = MakeFourCC('h', 'v', 'c', 'C');
+        cookieBytes = formattedCookie.data();
+        cookieSize = formattedCookie.size();
     }
 
     const StatusCode cookieStatus =
@@ -247,7 +395,8 @@ StatusCode AMFEncoder::SetMagicCookie(HostBufferRef* buffer) {
     if (cookieStatus != errNone || typeStatus != errNone) {
         return SetError(buffer, errFail, "Could not set AMF codec header for Resolve.");
     }
-    g_Log(logLevelInfo, "AMF encoder: supplied %s codec header (%zu bytes)", av1 ? "av1C" : "Annex B", cookieSize);
+    const char* headerType = av1 ? "av1C" : (hevc ? "hvcC" : "Annex B");
+    g_Log(logLevelInfo, "AMF encoder: supplied %s codec header (%zu bytes)", headerType, cookieSize);
     return errNone;
 }
 
@@ -320,12 +469,91 @@ StatusCode AMFEncoder::CopyInputFrame(HostBufferRef* buffer, amf::AMFSurfacePtr&
     }
 
     const EncoderFormat& format = descriptor.formats[formatIndex];
-    const size_t bytesPerComponent = format.bitDepth > 8 ? 2 : 1;
+    if ((width & 1) != 0 || (height & 1) != 0) {
+        buffer->UnlockBuffer();
+        return SetError(buffer, errInvalidParam, "AMF 4:2:0 encoding requires even frame dimensions.");
+    }
+    const uint32_t sampleBits = format.sampleBits != 0 ? format.sampleBits : static_cast<uint32_t>(format.bitDepth);
+    const size_t bytesPerComponent = sampleBits > 8 ? 2 : 1;
     const size_t lumaBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * bytesPerComponent;
-    const size_t requiredBytes = lumaBytes + lumaBytes / 2;
+    const size_t chromaPlaneBytes = lumaBytes / 4;
+    const size_t rowBytes = static_cast<size_t>(width) * bytesPerComponent;
+    const bool semiPlanarInput = format.colorModel == clrNV12;
+    const bool planarInput = format.colorModel == clrYUVp;
+    const bool packed422Input = format.colorModel == clrUYVY;
+    if (!semiPlanarInput && !planarInput && !packed422Input) {
+        buffer->UnlockBuffer();
+        return SetError(buffer, errUnsupported, "AMF encoder received an unsupported color model.");
+    }
+    const size_t packedRowBytes = rowBytes * 2;
+    const size_t rgb16RowBytes = static_cast<size_t>(width) * 3 * sizeof(uint16_t);
+    const size_t rgb16FrameBytes = rgb16RowBytes * static_cast<size_t>(height);
+    const bool rgb16Input = format.bitDepth == 10 && bytesPerComponent == 2 && inputSize == rgb16FrameBytes;
+    size_t sourcePackedStride = packedRowBytes;
+    bool reportedStride = false;
+    if (packed422Input) {
+        PropertyType strideType = propTypeNull;
+        const void* strideData = nullptr;
+        int strideCount = 0;
+        if (buffer->GetProperty(pIOPropStride, &strideType, &strideData, &strideCount) == errNone &&
+            strideType == propTypeUInt32 && strideData != nullptr && strideCount > 0) {
+            const size_t candidateStride = static_cast<const uint32_t*>(strideData)[0];
+            if (candidateStride >= packedRowBytes) {
+                sourcePackedStride = candidateStride;
+                reportedStride = true;
+            }
+        }
+        if (!reportedStride && height > 0 && inputSize % static_cast<size_t>(height) == 0) {
+            const size_t inferredStride = inputSize / static_cast<size_t>(height);
+            if (inferredStride >= packedRowBytes) sourcePackedStride = inferredStride;
+        }
+        if (sourcePackedStride < packedRowBytes) {
+            buffer->UnlockBuffer();
+            return SetError(buffer, errInvalidParam, "UYVY input stride is smaller than one frame row.");
+        }
+    }
+    const size_t requiredBytes = rgb16Input
+                                     ? rgb16FrameBytes
+                                     : (packed422Input
+                                            ? sourcePackedStride * (static_cast<size_t>(height) - 1) + packedRowBytes
+                                            : lumaBytes + chromaPlaneBytes * 2);
     if (inputSize < requiredBytes) {
         buffer->UnlockBuffer();
         return SetError(buffer, errInvalidParam, "Input frame buffer is smaller than selected AMF pixel format.");
+    }
+
+    bool leftAlign10Bit = false;
+    if (!rgb16Input && bytesPerComponent == 2 && format.bitDepth == 10) {
+        if (!inputAlignmentKnown) {
+            uint16_t maximumSample = 0;
+            const auto* samples = reinterpret_cast<const uint8_t*>(input);
+            const size_t sampleCount = requiredBytes / sizeof(uint16_t);
+            const size_t sampleStep = std::max<size_t>(1, sampleCount / 8192);
+            for (size_t index = 0; index < sampleCount; index += sampleStep) {
+                uint16_t sample = 0;
+                std::memcpy(&sample, samples + index * sizeof(uint16_t), sizeof(sample));
+                maximumSample = std::max(maximumSample, sample);
+            }
+            shift10BitSamples = maximumSample <= 1023;
+            inputAlignmentKnown = true;
+        }
+        leftAlign10Bit = shift10BitSamples;
+    }
+    if (!inputLayoutLogged) {
+        if (rgb16Input) {
+            g_Log(logLevelInfo, "AMF encoder: input buffer %zu bytes, row %zu, layout RGB16 -> P010",
+                  inputSize, rgb16RowBytes);
+        } else if (packed422Input) {
+            g_Log(logLevelInfo,
+                  "AMF encoder: input buffer %zu bytes, packed row %zu, stride %zu (%s), left-align 10-bit %s",
+                  inputSize, packedRowBytes, sourcePackedStride, reportedStride ? "reported" : "inferred/default",
+                  leftAlign10Bit ? "yes" : "no");
+        } else {
+            g_Log(logLevelInfo, "AMF encoder: input buffer %zu bytes, row %zu, layout %s, left-align 10-bit %s",
+                  inputSize, rowBytes, semiPlanarInput ? "NV12/P010" : "planar YUV",
+                  leftAlign10Bit ? "yes" : "no");
+        }
+        inputLayoutLogged = true;
     }
 
     amf::AMFSurface* rawSurface = nullptr;
@@ -342,20 +570,163 @@ StatusCode AMFEncoder::CopyInputFrame(HostBufferRef* buffer, amf::AMFSurfacePtr&
         return SetError(buffer, errFail, "AMF allocated an invalid host surface.");
     }
 
-    const size_t rowBytes = static_cast<size_t>(width) * bytesPerComponent;
     const auto* source = reinterpret_cast<const uint8_t*>(input);
     auto* destinationY = static_cast<uint8_t*>(yPlane->GetNative());
     auto* destinationUv = static_cast<uint8_t*>(uvPlane->GetNative());
     const size_t destinationYPitch = static_cast<size_t>(yPlane->GetHPitch());
     const size_t destinationUvPitch = static_cast<size_t>(uvPlane->GetHPitch());
-    for (int row = 0; row < height; ++row) {
-        std::memcpy(destinationY + static_cast<size_t>(row) * destinationYPitch, source + static_cast<size_t>(row) * rowBytes,
-                    rowBytes);
+    if (rgb16Input) {
+        const bool fullRange = commonConfig.IsFullRange();
+        for (int row = 0; row < height; ++row) {
+            uint8_t* destinationRow = destinationY + static_cast<size_t>(row) * destinationYPitch;
+            const uint8_t* sourceRow = source + static_cast<size_t>(row) * rgb16RowBytes;
+            for (int column = 0; column < width; ++column) {
+                const uint16_t y =
+                    RgbToP010Luma(ReadRgb16(sourceRow + static_cast<size_t>(column) * 6, fullRange), fullRange);
+                std::memcpy(destinationRow + static_cast<size_t>(column) * 2, &y, sizeof(y));
+            }
+        }
+    } else if (!packed422Input) {
+        for (int row = 0; row < height; ++row) {
+            uint8_t* destinationRow = destinationY + static_cast<size_t>(row) * destinationYPitch;
+            const uint8_t* sourceRow = source + static_cast<size_t>(row) * rowBytes;
+            if (leftAlign10Bit) {
+                for (size_t column = 0; column < static_cast<size_t>(width); ++column) {
+                    uint16_t sample = 0;
+                    std::memcpy(&sample, sourceRow + column * 2, sizeof(sample));
+                    sample = static_cast<uint16_t>(std::min<uint16_t>(sample, 1023) << 6);
+                    std::memcpy(destinationRow + column * 2, &sample, sizeof(sample));
+                }
+            } else {
+                std::memcpy(destinationRow, sourceRow, rowBytes);
+            }
+        }
+    } else {
+        const size_t macropixelBytes = bytesPerComponent * 4;
+        for (int row = 0; row < height; ++row) {
+            uint8_t* destinationRow = destinationY + static_cast<size_t>(row) * destinationYPitch;
+            const uint8_t* sourceRow = source + static_cast<size_t>(row) * sourcePackedStride;
+            for (size_t column = 0; column < static_cast<size_t>(width) / 2; ++column) {
+                const uint8_t* sourceMacropixel = sourceRow + column * macropixelBytes;
+                if (leftAlign10Bit) {
+                    uint16_t y0 = 0;
+                    uint16_t y1 = 0;
+                    std::memcpy(&y0, sourceMacropixel + bytesPerComponent, sizeof(y0));
+                    std::memcpy(&y1, sourceMacropixel + bytesPerComponent * 3, sizeof(y1));
+                    y0 = static_cast<uint16_t>(std::min<uint16_t>(y0, 1023) << 6);
+                    y1 = static_cast<uint16_t>(std::min<uint16_t>(y1, 1023) << 6);
+                    std::memcpy(destinationRow + (column * 2) * bytesPerComponent, &y0, sizeof(y0));
+                    std::memcpy(destinationRow + (column * 2 + 1) * bytesPerComponent, &y1, sizeof(y1));
+                } else {
+                    std::memcpy(destinationRow + (column * 2) * bytesPerComponent,
+                                sourceMacropixel + bytesPerComponent, bytesPerComponent);
+                    std::memcpy(destinationRow + (column * 2 + 1) * bytesPerComponent,
+                                sourceMacropixel + bytesPerComponent * 3, bytesPerComponent);
+                }
+            }
+        }
     }
-    const uint8_t* sourceUv = source + lumaBytes;
-    for (int row = 0; row < height / 2; ++row) {
-        std::memcpy(destinationUv + static_cast<size_t>(row) * destinationUvPitch,
-                    sourceUv + static_cast<size_t>(row) * rowBytes, rowBytes);
+    if (rgb16Input) {
+        const bool fullRange = commonConfig.IsFullRange();
+        for (int row = 0; row < height / 2; ++row) {
+            uint8_t* destinationRow = destinationUv + static_cast<size_t>(row) * destinationUvPitch;
+            const uint8_t* sourceTop = source + static_cast<size_t>(row * 2) * rgb16RowBytes;
+            const uint8_t* sourceBottom = sourceTop + rgb16RowBytes;
+            for (int column = 0; column < width / 2; ++column) {
+                const size_t left = static_cast<size_t>(column * 2) * 6;
+                const Rgb16 topLeft = ReadRgb16(sourceTop + left, fullRange);
+                const Rgb16 topRight = ReadRgb16(sourceTop + left + 6, fullRange);
+                const Rgb16 bottomLeft = ReadRgb16(sourceBottom + left, fullRange);
+                const Rgb16 bottomRight = ReadRgb16(sourceBottom + left + 6, fullRange);
+                const Rgb16 average{
+                    .r = (topLeft.r + topRight.r + bottomLeft.r + bottomRight.r + 2) / 4,
+                    .g = (topLeft.g + topRight.g + bottomLeft.g + bottomRight.g + 2) / 4,
+                    .b = (topLeft.b + topRight.b + bottomLeft.b + bottomRight.b + 2) / 4,
+                };
+                uint16_t u = 0;
+                uint16_t v = 0;
+                RgbToP010Chroma(average, fullRange, u, v);
+                std::memcpy(destinationRow + static_cast<size_t>(column) * 4, &u, sizeof(u));
+                std::memcpy(destinationRow + static_cast<size_t>(column) * 4 + 2, &v, sizeof(v));
+            }
+        }
+    } else if (semiPlanarInput) {
+        const uint8_t* sourceUv = source + lumaBytes;
+        for (int row = 0; row < height / 2; ++row) {
+            uint8_t* destinationRow = destinationUv + static_cast<size_t>(row) * destinationUvPitch;
+            const uint8_t* sourceRow = sourceUv + static_cast<size_t>(row) * rowBytes;
+            if (leftAlign10Bit) {
+                for (size_t column = 0; column < static_cast<size_t>(width); ++column) {
+                    uint16_t sample = 0;
+                    std::memcpy(&sample, sourceRow + column * 2, sizeof(sample));
+                    sample = static_cast<uint16_t>(std::min<uint16_t>(sample, 1023) << 6);
+                    std::memcpy(destinationRow + column * 2, &sample, sizeof(sample));
+                }
+            } else {
+                std::memcpy(destinationRow, sourceRow, rowBytes);
+            }
+        }
+    } else if (planarInput) {
+        const size_t chromaWidth = static_cast<size_t>(width) / 2;
+        const size_t chromaRowBytes = chromaWidth * bytesPerComponent;
+        const uint8_t* sourceU = source + lumaBytes;
+        const uint8_t* sourceV = sourceU + chromaPlaneBytes;
+        for (int row = 0; row < height / 2; ++row) {
+            uint8_t* destinationRow = destinationUv + static_cast<size_t>(row) * destinationUvPitch;
+            const uint8_t* sourceURow = sourceU + static_cast<size_t>(row) * chromaRowBytes;
+            const uint8_t* sourceVRow = sourceV + static_cast<size_t>(row) * chromaRowBytes;
+            for (size_t column = 0; column < chromaWidth; ++column) {
+                if (leftAlign10Bit) {
+                    uint16_t u = 0;
+                    uint16_t v = 0;
+                    std::memcpy(&u, sourceURow + column * 2, sizeof(u));
+                    std::memcpy(&v, sourceVRow + column * 2, sizeof(v));
+                    u = static_cast<uint16_t>(std::min<uint16_t>(u, 1023) << 6);
+                    v = static_cast<uint16_t>(std::min<uint16_t>(v, 1023) << 6);
+                    std::memcpy(destinationRow + column * 4, &u, sizeof(u));
+                    std::memcpy(destinationRow + column * 4 + 2, &v, sizeof(v));
+                } else {
+                    std::memcpy(destinationRow + (column * 2) * bytesPerComponent,
+                                sourceURow + column * bytesPerComponent, bytesPerComponent);
+                    std::memcpy(destinationRow + (column * 2 + 1) * bytesPerComponent,
+                                sourceVRow + column * bytesPerComponent, bytesPerComponent);
+                }
+            }
+        }
+    } else if (packed422Input) {
+        const size_t macropixelBytes = bytesPerComponent * 4;
+        for (int row = 0; row < height / 2; ++row) {
+            uint8_t* destinationRow = destinationUv + static_cast<size_t>(row) * destinationUvPitch;
+            const uint8_t* sourceTop = source + static_cast<size_t>(row * 2) * sourcePackedStride;
+            const uint8_t* sourceBottom = sourceTop + sourcePackedStride;
+            for (size_t column = 0; column < static_cast<size_t>(width) / 2; ++column) {
+                const uint8_t* top = sourceTop + column * macropixelBytes;
+                const uint8_t* bottom = sourceBottom + column * macropixelBytes;
+                if (bytesPerComponent == 1) {
+                    destinationRow[column * 2] =
+                        static_cast<uint8_t>((static_cast<unsigned>(top[0]) + bottom[0] + 1) / 2);
+                    destinationRow[column * 2 + 1] =
+                        static_cast<uint8_t>((static_cast<unsigned>(top[2]) + bottom[2] + 1) / 2);
+                } else {
+                    uint16_t topU = 0;
+                    uint16_t bottomU = 0;
+                    uint16_t topV = 0;
+                    uint16_t bottomV = 0;
+                    std::memcpy(&topU, top, sizeof(topU));
+                    std::memcpy(&bottomU, bottom, sizeof(bottomU));
+                    std::memcpy(&topV, top + bytesPerComponent * 2, sizeof(topV));
+                    std::memcpy(&bottomV, bottom + bytesPerComponent * 2, sizeof(bottomV));
+                    uint16_t outputU = static_cast<uint16_t>((static_cast<uint32_t>(topU) + bottomU + 1) / 2);
+                    uint16_t outputV = static_cast<uint16_t>((static_cast<uint32_t>(topV) + bottomV + 1) / 2);
+                    if (leftAlign10Bit) {
+                        outputU = static_cast<uint16_t>(std::min<uint16_t>(outputU, 1023) << 6);
+                        outputV = static_cast<uint16_t>(std::min<uint16_t>(outputV, 1023) << 6);
+                    }
+                    std::memcpy(destinationRow + column * 4, &outputU, sizeof(outputU));
+                    std::memcpy(destinationRow + column * 4 + 2, &outputV, sizeof(outputV));
+                }
+            }
+        }
     }
     buffer->UnlockBuffer();
     surface->SetPts(pts);
@@ -380,22 +751,35 @@ StatusCode AMFEncoder::EmitPackets(HostBufferRef* errorBuffer) {
         if (packet == nullptr || packet->GetNative() == nullptr || packet->GetSize() == 0) {
             return SetError(errorBuffer, errFail, "AMD AMF returned an empty encoded packet.");
         }
+        const auto* packetBytes = static_cast<const uint8_t*>(packet->GetNative());
+        size_t packetSize = static_cast<size_t>(packet->GetSize());
+        std::vector<uint8_t> formattedPacket;
+        if (IsHevc(descriptor)) {
+            std::string conversionError;
+            if (!ConvertHevcSampleToLengthPrefixed(packetBytes, packetSize, formattedPacket, conversionError)) {
+                return SetError(errorBuffer, errFail, conversionError);
+            }
+            packetBytes = formattedPacket.data();
+            packetSize = formattedPacket.size();
+        }
+
         HostBufferRef output(false);
-        const size_t packetSize = packet->GetSize();
         if (!output.IsValid() || !output.Resize(packetSize)) return errAlloc;
 
         char* outputData = nullptr;
         size_t outputSize = 0;
         if (!output.LockBuffer(&outputData, &outputSize) || outputData == nullptr || outputSize < packetSize) return errAlloc;
-        std::memcpy(outputData, packet->GetNative(), packetSize);
+        std::memcpy(outputData, packetBytes, packetSize);
         output.UnlockBuffer();
 
         const int64_t pts = data->GetPts();
         output.SetProperty(pIOPropPTS, propTypeInt64, &pts, 1);
         output.SetProperty(pIOPropDTS, propTypeInt64, &pts, 1);
         amf::AMFVariant pictureType;
-        const wchar_t* pictureTypeProperty = IsAv1(descriptor) ? AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE
-                                                                : AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE;
+        const wchar_t* pictureTypeProperty = IsAv1(descriptor)
+                                                 ? AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE
+                                                 : (IsHevc(descriptor) ? AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE
+                                                                       : AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE);
         const bool hasPictureType = data->GetProperty(pictureTypeProperty, &pictureType) == AMF_OK;
         const uint8_t keyFrame = hasPictureType && pictureType.ToInt64() == 0 ? 1 : 0;
         output.SetProperty(pIOPropIsKeyFrame, propTypeUInt8, &keyFrame, 1);
@@ -433,7 +817,8 @@ StatusCode AMFEncoder::DoProcess(HostBufferRef* buffer) {
     if (result != AMF_OK) {
         return SetError(buffer, errFail, "Could not submit frame to AMD AMF: " + ResultText(result));
     }
-    return EmitPackets(buffer);
+    const StatusCode outputStatus = EmitPackets(buffer);
+    return outputStatus == errMoreData ? errNone : outputStatus;
 }
 
 void AMFEncoder::DoFlush() {

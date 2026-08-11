@@ -7,6 +7,7 @@
 
 #include "av1_amf_encoder.h"
 #include "h264_amf_encoder.h"
+#include "h265_amf_encoder.h"
 
 using namespace IOPlugin;
 
@@ -51,6 +52,10 @@ StatusCode g_HandleCreateObj(unsigned char* uuid, ObjectRef* object) {
         *object = new H264AMFEncoder(formatIndex);
         return errNone;
     }
+    if (MatchCodecUuid<H265AMFEncoder>(uuid, formatIndex)) {
+        *object = new H265AMFEncoder(formatIndex);
+        return errNone;
+    }
     if (MatchCodecUuid<Av1AMFEncoder>(uuid, formatIndex)) {
         *object = new Av1AMFEncoder(formatIndex);
         return errNone;
@@ -72,6 +77,7 @@ StatusCode g_HandlePluginTerminate() { return errNone; }
 
 StatusCode g_ListCodecs(HostListRef* list) {
     if (const StatusCode status = H264AMFEncoder::RegisterCodecs(list); status != errNone) return status;
+    if (const StatusCode status = H265AMFEncoder::RegisterCodecs(list); status != errNone) return status;
     return Av1AMFEncoder::RegisterCodecs(list);
 }
 
@@ -81,6 +87,9 @@ StatusCode g_GetEncoderSettings(unsigned char* uuid, HostPropertyCollectionRef* 
     uint32_t ignoredIndex = 0;
     if (MatchCodecUuid<H264AMFEncoder>(uuid, ignoredIndex)) {
         return H264AMFEncoder::GetEncoderSettings(values, settingsList);
+    }
+    if (MatchCodecUuid<H265AMFEncoder>(uuid, ignoredIndex)) {
+        return H265AMFEncoder::GetEncoderSettings(values, settingsList);
     }
     if (MatchCodecUuid<Av1AMFEncoder>(uuid, ignoredIndex)) {
         return Av1AMFEncoder::GetEncoderSettings(values, settingsList);

@@ -22,6 +22,10 @@ add_library(amf_encoder_plugin SHARED
     encoder_info.h
     h264_amf_encoder.cpp
     h264_amf_encoder.h
+    h265_amf_encoder.cpp
+    h265_amf_encoder.h
+    hevc_config.cpp
+    hevc_config.h
     plugin.cpp
     plugin.h
 )

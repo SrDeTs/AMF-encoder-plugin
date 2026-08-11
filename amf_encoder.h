@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <AMF/components/VideoEncoderAV1.h>
+#include <AMF/components/VideoEncoderHEVC.h>
 #include <AMF/components/VideoEncoderVCE.h>
 #include <AMF/core/Factory.h>
 
@@ -46,6 +47,9 @@ class AMFEncoder : public IPluginCodecRef {
     amf::AMFComponent* encoder{nullptr};
     std::mutex processMutex{};
     bool drainRequested{false};
+    bool inputLayoutLogged{false};
+    bool inputAlignmentKnown{false};
+    bool shift10BitSamples{false};
     int width{0};
     int height{0};
 };

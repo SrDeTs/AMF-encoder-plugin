@@ -34,6 +34,7 @@ const EncoderDescriptor Av1AMFEncoder::descriptor = {
                 .surfaceFormat = amf::AMF_SURFACE_P010,
             },
         },
+    .containers = {"mp4", "mov", "mkv"},
 };
 
 Av1AMFEncoder::Av1AMFEncoder(const uint32_t formatIndex) : AMFEncoder(descriptor, formatIndex) {}

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <AMF/core/Surface.h>
@@ -26,9 +27,12 @@ enum class RateControl : int32_t {
 struct EncoderFormat {
     const char* name{};
     int32_t bitDepth{8};
+    uint32_t sampleBits{};
     uint32_t colorModel{};
     uint8_t hSubsampling{2};
     uint8_t vSubsampling{2};
+    bool advertiseSubsampling{true};
+    bool configureInputOnInit{true};
     amf::AMF_SURFACE_FORMAT surfaceFormat{amf::AMF_SURFACE_UNKNOWN};
 };
 
@@ -50,6 +54,7 @@ struct EncoderDescriptor {
     int32_t defaultPreset{};
     std::vector<PresetOption> presets{};
     std::vector<EncoderFormat> formats{};
+    std::vector<std::string> containers{};
 };
 
 }

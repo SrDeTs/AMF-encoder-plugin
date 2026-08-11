@@ -11,14 +11,15 @@ Versao em ingles: [English.md](English.md)
 | Codec | Formato de entrada | Profundidade | Aceleracao |
 | --- | --- | --- | --- |
 | H.264/AVC | NV12 4:2:0 | 8-bit | AMD AMF |
+| HEVC/H.265 Main | UYVY 4:2:2 | 8-bit | AMD AMF |
+| HEVC/H.265 Main 10 | P010 4:2:0 | 10-bit em 16-bit | AMD AMF |
 | AV1 | NV12 4:2:0 | 8-bit | AMD AMF |
 | AV1 | P010 4:2:0 | 10-bit | AMD AMF |
 
-HEVC/H.265 nao e registrado e nao aparece no Resolve.
-
-O plugin anuncia MP4, MOV e MKV ao Resolve. A disponibilidade final de cada
-combinacao ainda depende do muxer do Resolve. Por exemplo, o Resolve pode nao
-oferecer AV1 em MOV mesmo que o codec esteja instalado.
+H.264 e AV1 anunciam MP4, MOV e MKV. HEVC anuncia somente MP4. MOV e MKV ficam
+ocultos para HEVC ate o caminho de muxing ser validado. A disponibilidade final
+das outras combinacoes ainda depende do muxer do Resolve. Por exemplo, o
+Resolve pode nao oferecer AV1 em MOV mesmo que o codec esteja instalado.
 
 Este e somente um plugin de video. Audio AAC, FLAC ou PCM e tratado pelo
 Resolve ou por outro plugin de audio.
@@ -98,7 +99,7 @@ sudo rm -rf /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle
 
 ### Preset
 
-H.264:
+H.264 e HEVC:
 
 - High Quality
 - Quality
@@ -114,13 +115,13 @@ AV1:
 
 ### Controle de taxa
 
-- Constant QP: usa QP no H.264 e Q Index no AV1
+- Constant QP: usa QP no H.264/HEVC e Q Index no AV1
 - Variable Bitrate: usa bitrate alvo, bitrate maximo e tamanho do buffer
 - Constant Bitrate: usa bitrate alvo e tamanho do buffer
 
 Valores menores de QP/Q Index produzem maior qualidade e arquivos maiores.
 
-- H.264 QP: 0 a 51
+- H.264/HEVC QP: 0 a 51
 - AV1 Q Index: 1 a 255
 
 Bitrate e tamanho de buffer sao mostrados apenas quando aplicaveis ao modo de
@@ -159,8 +160,9 @@ radv: RADV_PERFTEST=video_decode is deprecated
 ## Limitacoes
 
 - Nao existe fallback por CPU.
-- HEVC/H.265 nao esta disponivel.
+- HEVC/H.265 e experimental e aparece somente com container MP4.
+- HEVC/H.265 em MOV e MKV nao esta disponivel.
 - H.264 10-bit nao esta disponivel.
-- Suporte real a AV1 e P010 depende do hardware e runtime AMD.
+- Suporte real a HEVC, AV1 e P010 depende do hardware e runtime AMD.
 - O plugin codifica video; ele nao controla bugs de audio ou do muxer do
   Resolve.
