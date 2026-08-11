@@ -25,15 +25,8 @@ Resolve ou por outro plugin de audio.
 
 ## Arquitetura
 
-O binario linka dinamicamente apenas o runtime AMF do sistema:
-
-```text
-libamfrt64.so.1
-```
-
-O contexto AMF e iniciado com `InitVulkan(nullptr)`, permitindo que o proprio
-runtime AMD crie o dispositivo Vulkan correto. O plugin nao cria um dispositivo
-Vulkan manualmente e nao linka diretamente `libvulkan`.
+O plugin usa AMD AMF diretamente. No Linux, o proprio runtime cria o contexto
+grafico necessario para acessar o encoder da GPU.
 
 O binario nao linka:
 
