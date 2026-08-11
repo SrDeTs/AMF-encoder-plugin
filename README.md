@@ -57,9 +57,8 @@ sujeitos aos termos do SDK da Blackmagic Design.
 Os headers AMF ja estao no repositorio. Nao e necessario instalar headers AMF
 separados para compilar esta versao.
 
-No CachyOS/Arch, use um pacote compativel com a distribuicao que forneca o
-runtime AMF. Nao use `amdgpu-install` feito para Ubuntu apenas para satisfazer
-esta dependencia.
+Use um pacote compativel com a distribuicao que forneca o
+runtime AMF.
 
 Confirme que o runtime esta visivel:
 
@@ -90,12 +89,6 @@ O build tambem gera a estrutura:
 
 ```text
 build/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/amf_encoder_plugin.dvcp
-```
-
-Para confirmar que FFmpeg e Vulkan nao foram linkados diretamente:
-
-```bash
-ldd build/amf_encoder_plugin.dvcp
 ```
 
 ## Instalacao
