@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "hevc_config.h"
+#include "rgb16_to_p010.h"
 
 extern "C" AMF_RESULT AMF_CDECL_CALL AMFInit(amf_uint64 version, amf::AMFFactory** factory);
 
@@ -24,65 +25,6 @@ bool IsAv1(const EncoderDescriptor& descriptor) {
 
 bool IsHevc(const EncoderDescriptor& descriptor) {
     return descriptor.fourCC == MakeFourCC('h', 'v', 'c', '1');
-}
-
-struct Rgb16 {
-    int32_t r;
-    int32_t g;
-    int32_t b;
-};
-
-Rgb16 ReadRgb16(const uint8_t* pixel, const bool fullRange) {
-    Rgb16 value{};
-    uint16_t components[3]{};
-    std::memcpy(components, pixel, sizeof(components));
-    value.r = components[0];
-    value.g = components[1];
-    value.b = components[2];
-    if (!fullRange) {
-        constexpr int32_t videoMinimum = 64 << 6;
-        constexpr int32_t videoMaximum = 940 << 6;
-        constexpr int32_t videoSpan = videoMaximum - videoMinimum;
-        const auto normalize = [=](const int32_t component) {
-            const int32_t clamped = std::clamp(component, videoMinimum, videoMaximum) - videoMinimum;
-            return static_cast<int32_t>((int64_t(clamped) * 65535 + videoSpan / 2) / videoSpan);
-        };
-        value.r = normalize(value.r);
-        value.g = normalize(value.g);
-        value.b = normalize(value.b);
-    }
-    return value;
-}
-
-int32_t RgbToLuma16(const Rgb16& rgb) {
-    return static_cast<int32_t>((int64_t(13933) * rgb.r + int64_t(46871) * rgb.g + int64_t(4732) * rgb.b +
-                                 32768) >>
-                                16);
-}
-
-int32_t ScaleSigned(const int32_t value, const int32_t scale) {
-    const int64_t product = int64_t(value) * scale;
-    return product >= 0 ? static_cast<int32_t>((product + 32768) >> 16)
-                        : -static_cast<int32_t>((-product + 32768) >> 16);
-}
-
-uint16_t RgbToP010Luma(const Rgb16& rgb, const bool fullRange) {
-    const int32_t luma16 = RgbToLuma16(rgb);
-    const int32_t code = fullRange ? static_cast<int32_t>((int64_t(luma16) * 1023 + 32767) / 65535)
-                                   : 64 + static_cast<int32_t>((int64_t(luma16) * 876 + 32767) / 65535);
-    return static_cast<uint16_t>(std::clamp(code, 0, 1023) << 6);
-}
-
-void RgbToP010Chroma(const Rgb16& rgb, const bool fullRange, uint16_t& u, uint16_t& v) {
-    const int32_t luma16 = RgbToLuma16(rgb);
-    const int32_t uScale = fullRange ? 551 : 483;
-    const int32_t vScale = fullRange ? 650 : 569;
-    const int32_t minimum = fullRange ? 0 : 64;
-    const int32_t maximum = fullRange ? 1023 : 960;
-    const int32_t uCode = std::clamp(512 + ScaleSigned(rgb.b - luma16, uScale), minimum, maximum);
-    const int32_t vCode = std::clamp(512 + ScaleSigned(rgb.r - luma16, vScale), minimum, maximum);
-    u = static_cast<uint16_t>(uCode << 6);
-    v = static_cast<uint16_t>(vCode << 6);
 }
 
 }  // namespace
@@ -576,16 +518,8 @@ StatusCode AMFEncoder::CopyInputFrame(HostBufferRef* buffer, amf::AMFSurfacePtr&
     const size_t destinationYPitch = static_cast<size_t>(yPlane->GetHPitch());
     const size_t destinationUvPitch = static_cast<size_t>(uvPlane->GetHPitch());
     if (rgb16Input) {
-        const bool fullRange = commonConfig.IsFullRange();
-        for (int row = 0; row < height; ++row) {
-            uint8_t* destinationRow = destinationY + static_cast<size_t>(row) * destinationYPitch;
-            const uint8_t* sourceRow = source + static_cast<size_t>(row) * rgb16RowBytes;
-            for (int column = 0; column < width; ++column) {
-                const uint16_t y =
-                    RgbToP010Luma(ReadRgb16(sourceRow + static_cast<size_t>(column) * 6, fullRange), fullRange);
-                std::memcpy(destinationRow + static_cast<size_t>(column) * 2, &y, sizeof(y));
-            }
-        }
+        ConvertRgb16ToP010(source, rgb16RowBytes, destinationY, destinationYPitch, destinationUv,
+                           destinationUvPitch, width, height, commonConfig.IsFullRange());
     } else if (!packed422Input) {
         for (int row = 0; row < height; ++row) {
             uint8_t* destinationRow = destinationY + static_cast<size_t>(row) * destinationYPitch;
@@ -626,31 +560,7 @@ StatusCode AMFEncoder::CopyInputFrame(HostBufferRef* buffer, amf::AMFSurfacePtr&
             }
         }
     }
-    if (rgb16Input) {
-        const bool fullRange = commonConfig.IsFullRange();
-        for (int row = 0; row < height / 2; ++row) {
-            uint8_t* destinationRow = destinationUv + static_cast<size_t>(row) * destinationUvPitch;
-            const uint8_t* sourceTop = source + static_cast<size_t>(row * 2) * rgb16RowBytes;
-            const uint8_t* sourceBottom = sourceTop + rgb16RowBytes;
-            for (int column = 0; column < width / 2; ++column) {
-                const size_t left = static_cast<size_t>(column * 2) * 6;
-                const Rgb16 topLeft = ReadRgb16(sourceTop + left, fullRange);
-                const Rgb16 topRight = ReadRgb16(sourceTop + left + 6, fullRange);
-                const Rgb16 bottomLeft = ReadRgb16(sourceBottom + left, fullRange);
-                const Rgb16 bottomRight = ReadRgb16(sourceBottom + left + 6, fullRange);
-                const Rgb16 average{
-                    .r = (topLeft.r + topRight.r + bottomLeft.r + bottomRight.r + 2) / 4,
-                    .g = (topLeft.g + topRight.g + bottomLeft.g + bottomRight.g + 2) / 4,
-                    .b = (topLeft.b + topRight.b + bottomLeft.b + bottomRight.b + 2) / 4,
-                };
-                uint16_t u = 0;
-                uint16_t v = 0;
-                RgbToP010Chroma(average, fullRange, u, v);
-                std::memcpy(destinationRow + static_cast<size_t>(column) * 4, &u, sizeof(u));
-                std::memcpy(destinationRow + static_cast<size_t>(column) * 4 + 2, &v, sizeof(v));
-            }
-        }
-    } else if (semiPlanarInput) {
+    if (!rgb16Input && semiPlanarInput) {
         const uint8_t* sourceUv = source + lumaBytes;
         for (int row = 0; row < height / 2; ++row) {
             uint8_t* destinationRow = destinationUv + static_cast<size_t>(row) * destinationUvPitch;
@@ -666,7 +576,7 @@ StatusCode AMFEncoder::CopyInputFrame(HostBufferRef* buffer, amf::AMFSurfacePtr&
                 std::memcpy(destinationRow, sourceRow, rowBytes);
             }
         }
-    } else if (planarInput) {
+    } else if (!rgb16Input && planarInput) {
         const size_t chromaWidth = static_cast<size_t>(width) / 2;
         const size_t chromaRowBytes = chromaWidth * bytesPerComponent;
         const uint8_t* sourceU = source + lumaBytes;
@@ -693,7 +603,7 @@ StatusCode AMFEncoder::CopyInputFrame(HostBufferRef* buffer, amf::AMFSurfacePtr&
                 }
             }
         }
-    } else if (packed422Input) {
+    } else if (!rgb16Input && packed422Input) {
         const size_t macropixelBytes = bytesPerComponent * 4;
         for (int row = 0; row < height / 2; ++row) {
             uint8_t* destinationRow = destinationUv + static_cast<size_t>(row) * destinationUvPitch;

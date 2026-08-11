@@ -10,7 +10,7 @@ AMD Advanced Media Framework (AMF) directly, without using FFmpeg as a backend.
 | --- | --- | --- | --- |
 | H.264/AVC | NV12 4:2:0 | 8-bit | AMD AMF |
 | HEVC/H.265 Main | UYVY 4:2:2 | 8-bit | AMD AMF |
-| HEVC/H.265 Main 10 | P010 4:2:0 | 10-bit in 16-bit samples | AMD AMF |
+| HEVC/H.265 Main 10 | RGB16 converted to P010 4:2:0 | 10-bit | AMD AMF |
 | AV1 | NV12 4:2:0 | 8-bit | AMD AMF |
 | AV1 | P010 4:2:0 | 10-bit | AMD AMF |
 
@@ -18,6 +18,8 @@ H.264 and AV1 advertise MP4, MOV, and MKV. HEVC advertises MP4 only. MOV and
 MKV remain hidden for HEVC until their muxing path is validated. Final
 availability of the other combinations still depends on Resolve's muxer. For
 example, Resolve may not offer AV1 in MOV even when the codec is installed.
+
+HEVC Main 8-bit and Main 10 have been validated with MP4.
 
 This is a video-only plugin. AAC, FLAC, and PCM audio are handled by Resolve or
 by a separate audio plugin.
@@ -62,6 +64,7 @@ libamfrt64.so.1 => /usr/lib/libamfrt64.so.1
 ```bash
 cmake -S . -B build
 cmake --build build -j"$(nproc)"
+ctest --test-dir build --output-on-failure
 ```
 
 Main artifact:
@@ -158,7 +161,7 @@ radv: RADV_PERFTEST=video_decode is deprecated
 ## Limitations
 
 - No CPU fallback exists.
-- HEVC/H.265 is experimental and appears only with the MP4 container.
+- HEVC/H.265 appears only with the MP4 container.
 - HEVC/H.265 in MOV and MKV is unavailable.
 - H.264 10-bit is unavailable.
 - Actual HEVC, AV1, and P010 support depends on the AMD hardware and runtime.

@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(amf_encoder_plugin LANGUAGES CXX)
+project(amf_encoder_plugin VERSION 0.1.0 LANGUAGES CXX)
+
+include(CTest)
+
+if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif ()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +34,8 @@ add_library(amf_encoder_plugin SHARED
     hevc_config.h
     plugin.cpp
     plugin.h
+    rgb16_to_p010.cpp
+    rgb16_to_p010.h
 )
 
 target_compile_definitions(amf_encoder_plugin PRIVATE __STDC_CONSTANT_MACROS)
@@ -58,4 +66,22 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "${PLUGIN_BUNDLE_DIR}/$<TARGET_FILE_NAME:amf_encoder_plugin>"
         VERBATIM
     )
+endif ()
+
+if (BUILD_TESTING)
+    add_executable(rgb16_to_p010_test
+        tests/rgb16_to_p010_test.cpp
+        rgb16_to_p010.cpp
+    )
+    target_include_directories(rgb16_to_p010_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_options(rgb16_to_p010_test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME rgb16_to_p010 COMMAND rgb16_to_p010_test)
+
+    add_executable(hevc_config_test
+        tests/hevc_config_test.cpp
+        hevc_config.cpp
+    )
+    target_include_directories(hevc_config_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_options(hevc_config_test PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME hevc_config COMMAND hevc_config_test)
 endif ()
