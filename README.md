@@ -30,15 +30,7 @@ grafico necessario para acessar o encoder da GPU.
 
 O binario nao linka:
 
-- FFmpeg, `libavcodec`, `libavformat`, `libavutil` ou `libswscale`
-- x264 ou x265
-- NVENC ou CUDA
-- encoder por CPU ou fallback silencioso
-
-Os headers oficiais AMD AMF usados no build estao em `third_party/AMF`. A
-licenca MIT desses headers esta preservada em
-`third_party/AMF-MIT-LICENSE.txt`. Os arquivos de interface e wrapper do host
-seguem a estrutura do SDK Codec Plugin distribuido com o DaVinci Resolve.
+- FFmpeg.
 
 O projeto nao contem uma licenca GPL e nao incorpora FFmpeg. Este repositorio
 tambem nao concede automaticamente uma licenca geral para arquivos que estejam
@@ -47,15 +39,12 @@ sujeitos aos termos do SDK da Blackmagic Design.
 ## Requisitos
 
 - Linux x86-64
-- DaVinci Resolve com suporte a Codec Plugins
+- DaVinci Resolve Studio
 - GPU AMD com suporte de hardware ao codec selecionado
 - driver AMD/Mesa funcional
 - runtime AMD AMF fornecendo `libamfrt64.so.1`
 - CMake 3.20 ou mais recente
 - compilador com C++20
-
-Os headers AMF ja estao no repositorio. Nao e necessario instalar headers AMF
-separados para compilar esta versao.
 
 Use um pacote compativel com a distribuicao que forneca o
 runtime AMF.
