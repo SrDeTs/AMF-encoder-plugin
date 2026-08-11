@@ -38,7 +38,7 @@ const EncoderDescriptor H265AMFEncoder::descriptor = {
                 .surfaceFormat = amf::AMF_SURFACE_P010,
             },
         },
-    .containers = {"mp4"},
+    .containers = {"mp4", "mov"},
 };
 
 H265AMFEncoder::H265AMFEncoder(const uint32_t formatIndex) : AMFEncoder(descriptor, formatIndex) {}
