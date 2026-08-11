@@ -169,24 +169,6 @@ radv: RADV_PERFTEST=video_decode is deprecated
 3. Reinicie completamente o Resolve.
 4. Verifique `~/.local/share/DaVinciResolve/logs/ResolveDebug.txt` por falha de carregamento do plugin.
 
-### AMF result 5
-
-`AMF_OUT_OF_RANGE`: alguma propriedade foi rejeitada pelo runtime. A versao
-atual nao envia mais o antigo valor de Async Depth para `InputQueueSize`. Se o
-erro ocorrer com outro controle, preserve o trecho completo do log.
-
-### AMF result 25
-
-`AMF_INPUT_FULL`: a fila interna do encoder esta cheia. A versao atual trata
-esse retorno como backpressure e nao como falha imediata. Se ainda ocorrer,
-confirme que o Resolve foi reiniciado e carregou o build atual.
-
-### Cannot add video track to clip
-
-Normalmente indica FourCC ou magic cookie invalido para o muxer. O plugin usa
-`avc1` para H.264, `av01` para AV1, cabecalho Annex B para H.264 e registro
-`av1C` para AV1.
-
 ## Limitacoes
 
 - Nao existe fallback por CPU.
@@ -195,7 +177,3 @@ Normalmente indica FourCC ou magic cookie invalido para o muxer. O plugin usa
 - Suporte real a AV1 e P010 depende do hardware e runtime AMD.
 - O plugin codifica video; ele nao controla bugs de audio ou do muxer do
   Resolve.
-- O plugin e dinamico. Mesmo que o codigo do plugin seja linkado de forma mais
-  fechada, `libamfrt64.so.1` continua sendo uma dependencia de runtime.
-- O teste `ffmpeg -c:v h264_amf` pode ajudar a validar a instalacao AMF do
-  sistema, mas FFmpeg nao e dependencia nem backend deste plugin.
