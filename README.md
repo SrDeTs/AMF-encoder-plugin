@@ -101,24 +101,6 @@ sudo install -m 755 build/amf_encoder_plugin.dvcp \
   /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/amf_encoder_plugin.dvcp
 ```
 
-Feche completamente o Resolve antes de substituir o plugin. Abra novamente
-depois da instalacao; o Resolve mantem bibliotecas `.dvcp` carregadas durante
-toda a execucao.
-
-### Symlink para desenvolvimento
-
-Durante desenvolvimento, um link simbolico evita copiar o binario depois de
-cada build:
-
-```bash
-sudo install -d /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64
-sudo ln -sfn "$PWD/build/amf_encoder_plugin.dvcp" \
-  /opt/resolve/IOPlugins/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64/amf_encoder_plugin.dvcp
-```
-
-O symlink aponta sempre para o build atual, mas o Resolve ainda precisa ser
-reiniciado para carregar uma nova compilacao.
-
 ### Remocao
 
 ```bash
@@ -169,11 +151,6 @@ controle de taxa escolhido.
 Os valores sao enums nativos AMF. Algumas combinacoes podem depender da GPU,
 da versao do runtime e do driver.
 
-`Async Depth` nao e exposto. Essa opcao pertence a abstracao do encoder AMF no
-FFmpeg e nao equivale diretamente a `InputQueueSize` da API AMF. O runtime
-gerencia a fila interna; quando ela fica cheia, o plugin aplica backpressure,
-coleta os pacotes prontos e tenta novamente.
-
 ## Comportamento no Linux
 
 O plugin define `DISABLE_LSFG=1` antes de inicializar AMF. Isso evita que a
@@ -185,40 +162,12 @@ O aviso abaixo vem do Mesa e nao indica falha de encode:
 radv: RADV_PERFTEST=video_decode is deprecated
 ```
 
-## Diagnostico
-
-Log principal do Resolve:
-
-```text
-~/.local/share/DaVinciResolve/logs/ResolveDebug.txt
-```
-
-Filtre mensagens relevantes:
-
-```bash
-grep -E "AMF encoder|AMF result|Failed to Encode|Failed to add video track" \
-  ~/.local/share/DaVinciResolve/logs/ResolveDebug.txt
-```
-
-Confirme carregamento do plugin:
-
-```bash
-grep "amf_encoder_plugin" ~/.local/share/DaVinciResolve/logs/ResolveDebug.txt
-```
-
-Mensagens de cabecalho esperadas ao iniciar um render:
-
-```text
-AMF encoder: supplied Annex B codec header
-AMF encoder: supplied av1C codec header
-```
-
 ### Encoder nao aparece
 
 1. Confirme o caminho e permissao do `.dvcp`.
 2. Confirme `libamfrt64.so.1` com `ldconfig` e `ldd`.
 3. Reinicie completamente o Resolve.
-4. Verifique `ResolveDebug.txt` por falha de carregamento do plugin.
+4. Verifique `~/.local/share/DaVinciResolve/logs/ResolveDebug.txt` por falha de carregamento do plugin.
 
 ### AMF result 5
 
