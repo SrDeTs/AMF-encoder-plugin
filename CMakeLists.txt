@@ -12,6 +12,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_path(AMF_INCLUDE_DIR NAMES AMF/core/Factory.h REQUIRED)
 find_library(AMF_RUNTIME_LIBRARY NAMES amfrt64 REQUIRED)
 
 set(PLUGIN_BUNDLE_DIR "${CMAKE_BINARY_DIR}/amf_encoder_plugin.dvcp.bundle/Contents/Linux-x86-64")
@@ -46,7 +47,7 @@ target_include_directories(amf_encoder_plugin PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/wrapper"
 )
-target_include_directories(amf_encoder_plugin SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+target_include_directories(amf_encoder_plugin SYSTEM PRIVATE "${AMF_INCLUDE_DIR}")
 target_link_libraries(amf_encoder_plugin PRIVATE host_plugin "${AMF_RUNTIME_LIBRARY}")
 
 add_executable(amf_av1_crop_fix

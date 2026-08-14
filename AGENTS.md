@@ -8,8 +8,9 @@ Codec registration lives in `h264_amf_encoder.*`, `h265_amf_encoder.*`, and
 `amf_encoder.*`, while `amf_settings.*` defines Resolve-facing controls.
 HEVC bitstream handling and RGB16-to-P010 conversion are isolated in
 `hevc_config.*` and `rgb16_to_p010.*`. Blackmagic API declarations are under
-`include/`; the local host wrapper is under `wrapper/`; AMF headers are under
-`third_party/AMF/`. Tests live in `tests/`. Treat `build/` as generated output.
+`include/`; the local host wrapper is under `wrapper/`; AMF headers come from
+the system `amf-headers` package. Tests live in `tests/`. Treat `build/` as
+generated output.
 
 ## Build, Test, and Development Commands
 
@@ -20,8 +21,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 Configuration defaults to `Release`, requires CMake 3.20+, and locates the
-system `libamfrt64.so.1`. The build produces `build/amf_encoder_plugin.dvcp`
-and a complete bundle under `build/amf_encoder_plugin.dvcp.bundle/`.
+system AMF headers and `libamfrt64.so.1`. The build produces
+`build/amf_encoder_plugin.dvcp` and a complete bundle under
+`build/amf_encoder_plugin.dvcp.bundle/`.
 Use `git diff --check` before submitting changes to catch whitespace errors.
 
 ## Coding Style & Naming Conventions

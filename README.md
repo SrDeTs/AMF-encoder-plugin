@@ -27,9 +27,16 @@ surfaces NV12 ou P010 ao encoder da GPU. No HEVC, o plugin tambem gera o registr
 
 O plugin nao usa nem linka FFmpeg.
 
-O projeto nao contem uma licenca GPL e nao incorpora FFmpeg. Este repositorio
-tambem nao concede automaticamente uma licenca geral para arquivos que estejam
-sujeitos aos termos do SDK da Blackmagic Design.
+## Licenca
+
+O codigo original de SrDeTs usa uma licenca permissiva baseada na MIT, com
+excecoes para componentes de terceiros. Consulte [LICENSE](LICENSE) e
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Os headers AMD AMF usados na compilacao preservam seus avisos MIT e sao obtidos
+do sistema. Arquivos originados ou derivados do SDK da Blackmagic Design
+continuam sujeitos aos termos aplicaveis desse SDK. O projeto nao incorpora nem
+usa codigo GPL do FFmpeg.
 
 ## Requisitos
 
@@ -38,12 +45,21 @@ sujeitos aos termos do SDK da Blackmagic Design.
 - GPU AMD com suporte de hardware ao codec selecionado
 - driver AMD/Mesa funcional
 - runtime AMD AMF fornecendo `libamfrt64.so.1`
-- headers AMF incluidos em `third_party/AMF`
+- pacote de desenvolvimento `amf-headers`
 - CMake 3.20 ou mais recente
 - compilador com C++20
 
-Use um pacote compativel com a distribuicao que forneca o
-runtime AMF.
+No Arch Linux, CachyOS e derivados, instale o runtime AMF pelo AUR:
+
+```bash
+sudo pacman -S amf-headers
+yay -S amf-amdgpu-pro
+sudo ldconfig
+```
+
+O pacote `amf-headers` e necessario para compilar o plugin. O pacote
+`amf-amdgpu-pro` fornece o runtime necessario para carregar e usar o plugin no
+Resolve. Um nao substitui o outro.
 
 Confirme que o runtime esta visivel:
 
@@ -120,3 +136,12 @@ radv: RADV_PERFTEST=video_decode is deprecated
 - Suporte real a HEVC, AV1 e P010 depende do hardware e runtime AMD.
 - O plugin codifica video; ele nao controla bugs de audio ou do muxer do
   Resolve.
+
+## Apoie o projeto
+
+O desenvolvimento pode ser apoiado pelo [Ko-fi do SrDeTs](https://ko-fi.com/srdets).
+
+As doacoes sao inteiramente voluntarias. Elas nao representam uma compra e nao
+concedem licenca adicional, garantia, suporte, prioridade no desenvolvimento ou
+acesso exclusivo a funcionalidades. O uso e a disponibilidade do projeto nao
+dependem de uma doacao.

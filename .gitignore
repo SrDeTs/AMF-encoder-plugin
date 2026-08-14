@@ -14,4 +14,4 @@ compile_commands.json
 *.dvcp
 .idea/
 .vscode/
-/third_party
+/third_party/

@@ -26,9 +26,16 @@ muxers.
 
 The plugin does not use or link FFmpeg.
 
-The project does not include a GPL license and does not incorporate FFmpeg.
-This repository also does not automatically grant a general license for files
-that are subject to the Blackmagic Design SDK terms.
+## License
+
+Original code by SrDeTs uses a permissive MIT-based license with third-party
+exceptions. See [LICENSE](LICENSE) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+AMD AMF headers used during compilation retain their MIT notices and are
+obtained from the system. Files originating from or derived from the Blackmagic
+Design SDK remain subject to the applicable SDK terms. The project does not
+incorporate or use GPL-licensed FFmpeg code.
 
 ## Requirements
 
@@ -37,11 +44,21 @@ that are subject to the Blackmagic Design SDK terms.
 - AMD GPU with hardware support for the selected codec
 - working AMD/Mesa driver
 - AMD AMF runtime providing `libamfrt64.so.1`
-- AMF headers included under `third_party/AMF`
+- `amf-headers` development package
 - CMake 3.20 or newer
 - C++20 compiler
 
-Use a package compatible with your distribution that provides the AMF runtime.
+On Arch Linux, CachyOS, and derivatives, install the AMF runtime from the AUR:
+
+```bash
+sudo pacman -S amf-headers
+yay -S amf-amdgpu-pro
+sudo ldconfig
+```
+
+The `amf-headers` package is required to build the plugin. The
+`amf-amdgpu-pro` package provides the runtime required to load and use the
+plugin in Resolve. Neither package replaces the other.
 
 Confirm that the runtime is visible:
 
@@ -117,3 +134,12 @@ radv: RADV_PERFTEST=video_decode is deprecated
 - H.264 10-bit is unavailable.
 - Actual HEVC, AV1, and P010 support depends on the AMD hardware and runtime.
 - The plugin encodes video and cannot control Resolve audio or muxer bugs.
+
+## Support the project
+
+Development can be supported through [SrDeTs on Ko-fi](https://ko-fi.com/srdets).
+
+Donations are entirely voluntary. They do not constitute a purchase and do not
+grant an additional license, warranty, support, development priority, or
+exclusive access to features. Use and availability of the project do not
+depend on a donation.

@@ -1,0 +1,42 @@
+MIT License with Third-Party Exceptions
+
+Copyright (c) 2026 SrDeTs
+
+For the purposes of this license, the "Software" means the original source code
+authored for the AMF Encoder Plugin project by SrDeTs. It excludes third-party
+materials identified below or in THIRD_PARTY_NOTICES.md.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of the Software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice, this permission notice, and the third-party
+exceptions below shall be included in all copies or substantial portions of
+the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Third-Party Exceptions
+----------------------
+
+1. AMD AMF development headers and runtime are external dependencies and
+   remain subject to their respective AMD license terms. They are not
+   relicensed by this document.
+
+2. Files under include/ and portions under wrapper/ that originate from or are
+   derived from the Blackmagic Design DaVinci Resolve Codec Plugin SDK remain
+   subject to the applicable Blackmagic Design SDK terms. No additional rights
+   to those materials are granted by this license.
+
+3. External libraries, drivers, runtimes, codecs, standards, trademarks, and
+   patents are not licensed by this document. In particular, the AMD AMF
+   runtime is a system dependency and is not part of the Software.
