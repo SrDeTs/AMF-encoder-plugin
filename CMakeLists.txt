@@ -50,14 +50,6 @@ target_include_directories(amf_encoder_plugin PRIVATE
 target_include_directories(amf_encoder_plugin SYSTEM PRIVATE "${AMF_INCLUDE_DIR}")
 target_link_libraries(amf_encoder_plugin PRIVATE host_plugin "${AMF_RUNTIME_LIBRARY}")
 
-add_executable(amf_av1_crop_fix
-    tools/amf_av1_crop_fix.cpp
-    av1_container_fix.cpp
-    av1_container_fix.h
-)
-target_include_directories(amf_av1_crop_fix PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_options(amf_av1_crop_fix PRIVATE -Wall -Wextra -Wpedantic)
-
 set_target_properties(amf_encoder_plugin PROPERTIES
     PREFIX ""
     SUFFIX ".dvcp"
@@ -103,12 +95,4 @@ if (BUILD_TESTING)
     target_include_directories(h264_config_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_options(h264_config_test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME h264_config COMMAND h264_config_test)
-
-    add_executable(av1_container_fix_test
-        tests/av1_container_fix_test.cpp
-        av1_container_fix.cpp
-    )
-    target_include_directories(av1_container_fix_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_compile_options(av1_container_fix_test PRIVATE -Wall -Wextra -Wpedantic)
-    add_test(NAME av1_container_fix COMMAND av1_container_fix_test)
 endif ()
